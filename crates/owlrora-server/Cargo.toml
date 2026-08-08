@@ -1,0 +1,21 @@
+[package]
+name = "owlrora-server"
+version = "0.0.0-dev"
+edition.workspace = true
+description = "OwlRora web server"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+axum = "0.8.9"
+mime_guess = "2.0.5"
+rust-embed = { version = "8.11.0", features = ["debug-embed"] }
+tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread", "signal"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt", "json"] }
+
+[dev-dependencies]
+tower = { version = "0.5.3", features = ["util"] }
+
+[lints]
+workspace = true

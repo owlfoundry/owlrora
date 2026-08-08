@@ -1,0 +1,10 @@
+.git
+.github
+.yaacli
+target
+**/target
+**/node_modules
+**/dist
+.env
+.env.*
+.DS_Store

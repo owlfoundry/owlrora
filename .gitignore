@@ -1,0 +1,22 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Node.js
+**/node_modules/
+**/dist/
+*.tsbuildinfo
+
+# Test output
+**/coverage/
+**/test-results/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+
+# Secrets
+.env
+.env.*
+!.env.example
