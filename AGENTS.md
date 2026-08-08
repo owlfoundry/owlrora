@@ -9,7 +9,7 @@ OwlRora is a single Rust web server with an embedded React frontend.
 - `apps/web/` — React and Vite frontend source
 - `docs/` — VitePress documentation deployed with Cloudflare Workers
 - `scripts/docker/` — container smoke tests
-- `scripts/release/` — release preparation, verification, and crates.io publication
+- `scripts/release/` — release version preparation and crates.io publication
 
 ## Repository boundaries
 
@@ -45,6 +45,7 @@ OwlRora is a single Rust web server with an embedded React frontend.
 - Keep the committed `owlrora-server` version at the reserved `0.0.0-dev` development sentinel.
 - Release tags use `server-v<semver>`, for example `server-v0.1.0`.
 - Do not commit a release-only version bump. `scripts/release/prepare_release.py` materializes the tag version in `Cargo.toml` and `Cargo.lock` inside the release workflow.
-- Do not run `cargo publish` manually. The `Release Server` workflow only prepares and publishes the crate; ordinary CI remains a separate concern.
+- Do not run `cargo publish` manually. The `Release Server` workflow only prepares and publishes the crate.
+- Do not add main-branch comparisons, commit-history checks, or ordinary CI execution to the release workflow.
 - Configure `CARGO_REGISTRY_TOKEN` as a GitHub Actions secret before creating the first release tag.
 - A rerun may publish only when the existing crates.io package checksum exactly matches the package generated from the tagged source.
