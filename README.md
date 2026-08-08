@@ -47,10 +47,10 @@ Build and smoke-test the production image:
 make docker-build
 ```
 
-Run it directly:
+Run the locally built image:
 
 ```bash
-docker run --rm --publish 8080:8080 ghcr.io/owlfoundry/owlrora:latest
+docker run --rm --publish 8080:8080 owlrora:dev
 ```
 
 The image serves both the API and frontend from one non-root process. Its health endpoint is `GET /health`.

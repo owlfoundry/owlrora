@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         .try_init()?;
 
     let address = env::var("OWLRORA_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0:8080".to_owned())
+        .unwrap_or_else(|_| "127.0.0.1:8080".to_owned())
         .parse::<SocketAddr>()?;
     let listener = TcpListener::bind(address).await?;
     tracing::info!(%address, "server listening");

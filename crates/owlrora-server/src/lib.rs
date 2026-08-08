@@ -124,4 +124,57 @@ mod tests {
                 .any(|window| window == b"<title>OwlRora</title>")
         );
     }
+
+    #[tokio::test]
+    async fn frontend_routes_fall_back_to_the_embedded_shell() {
+        let response = app()
+            .oneshot(Request::get("/example/route").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "text/html");
+    }
+
+    #[tokio::test]
+    async fn embedded_assets_have_their_expected_content_type() {
+        let asset = WebAssets::iter()
+            .find(|path| path.ends_with(".css"))
+            .expect("the web build should contain a stylesheet");
+        let response = app()
+            .oneshot(
+                Request::get(format!("/{asset}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "text/css");
+    }
+
+    #[tokio::test]
+    async fn missing_assets_are_not_replaced_with_the_frontend_shell() {
+        let response = app()
+            .oneshot(
+                Request::get("/assets/missing.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn frontend_routes_only_accept_safe_read_methods() {
+        let response = app()
+            .oneshot(Request::post("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
 }
