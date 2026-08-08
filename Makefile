@@ -26,6 +26,10 @@ test: web-build ## Run all tests
 build: web-build ## Build the production server
 	@cargo build --release --locked --package owlrora-server
 
+.PHONY: package-check
+package-check: web-build ## Build and verify the publishable server crate
+	@scripts/test-server-package.sh
+
 .PHONY: web-build
 web-build: ## Build the embedded frontend
 	@pnpm build
@@ -37,6 +41,18 @@ web-dev: ## Run the Vite development server
 .PHONY: dev
 dev: web-build ## Build the frontend and run the server
 	@cargo run --locked --package owlrora-server
+
+.PHONY: docs
+docs: ## Run the documentation development server
+	@pnpm docs:dev
+
+.PHONY: docs-build
+docs-build: ## Build documentation for deployment
+	@pnpm docs:build
+
+.PHONY: docs-deploy
+docs-deploy: ## Deploy documentation to Cloudflare Workers
+	@pnpm docs:deploy
 
 .PHONY: docker-build
 docker-build: ## Build and smoke-test the production image

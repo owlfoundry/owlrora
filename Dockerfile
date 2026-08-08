@@ -1,7 +1,7 @@
 FROM node:24-bookworm-slim AS web-builder
 
 WORKDIR /workspace
-RUN npm install --global pnpm@10.30.3
+RUN npm install --global pnpm@11.20.0
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web/package.json apps/web/package.json
 RUN pnpm install --filter @owlrora/web... --frozen-lockfile
@@ -14,7 +14,7 @@ WORKDIR /workspace
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/owlrora-server/Cargo.toml crates/owlrora-server/Cargo.toml
 COPY crates/owlrora-server/src crates/owlrora-server/src
-COPY --from=web-builder /workspace/apps/web/dist apps/web/dist
+COPY --from=web-builder /workspace/crates/owlrora-server/web/dist crates/owlrora-server/web/dist
 RUN cargo build --release --locked --package owlrora-server
 
 FROM debian:bookworm-slim AS runtime

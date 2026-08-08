@@ -5,6 +5,10 @@ edition.workspace = true
 description = "OwlRora web server"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
+keywords = ["server", "self-hosted", "web"]
+categories = ["web-programming::http-server"]
+include = ["src/**", "web/dist/**", "Cargo.toml", "README.md"]
 
 [dependencies]
 axum = "0.8.9"

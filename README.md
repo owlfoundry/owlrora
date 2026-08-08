@@ -6,7 +6,7 @@ OwlRora is initialized as a Rust web server with a React frontend in `apps/web`.
 
 - Rust stable
 - Node.js 24 or later
-- pnpm 10.30.3
+- pnpm 11.20.0
 - Docker for container builds
 
 ## Development
@@ -31,12 +31,22 @@ For frontend development with Vite:
 pnpm dev
 ```
 
+## Documentation
+
+Run the VitePress documentation site locally:
+
+```bash
+make docs
+```
+
 ## Validation
 
 ```bash
 make check
 make test
 make build
+make package-check
+make docs-build
 ```
 
 ## Container

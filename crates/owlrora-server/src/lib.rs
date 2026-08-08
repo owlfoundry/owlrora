@@ -13,7 +13,7 @@ use rust_embed::Embed;
 use tokio::net::TcpListener;
 
 #[derive(Embed)]
-#[folder = "../../apps/web/dist"]
+#[folder = "web/dist"]
 struct WebAssets;
 
 /// Builds the application router.

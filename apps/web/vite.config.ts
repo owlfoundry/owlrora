@@ -4,7 +4,8 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [react()],
   build: {
-    outDir: "dist",
+    outDir: "../../crates/owlrora-server/web/dist",
+    emptyOutDir: true,
     sourcemap: false,
   },
   server: {

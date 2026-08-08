@@ -5,11 +5,17 @@
 # Node.js
 **/node_modules/
 **/dist/
+!/crates/owlrora-server/web/dist/
+!/crates/owlrora-server/web/dist/**
 *.tsbuildinfo
 
 # Test output
 **/coverage/
 **/test-results/
+
+# Python
+**/__pycache__/
+**/*.pyc
 
 # Editors and operating systems
 .DS_Store

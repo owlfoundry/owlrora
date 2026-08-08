@@ -6,6 +6,7 @@ target
 **/node_modules
 **/dist
 **/*.tsbuildinfo
+docs
 .env
 .env.*
 .DS_Store
