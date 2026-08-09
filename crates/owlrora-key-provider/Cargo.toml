@@ -1,0 +1,19 @@
+[package]
+name = "owlrora-key-provider"
+version = "0.0.0-dev"
+edition.workspace = true
+description = "Provider-neutral configuration-secret custody SPI for OwlRora"
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["ai", "cryptography", "gateway", "kms", "secrets"]
+categories = ["cryptography"]
+include = ["src/**", "tests/**", "README.md", "LICENSE"]
+
+[dependencies]
+async-trait = "0.1.91"
+thiserror = "2.0.18"
+zeroize = "1.8.2"
+
+[lints]
+workspace = true

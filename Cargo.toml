@@ -1,5 +1,8 @@
 [workspace]
-members = ["crates/owlrora-server"]
+members = [
+    "crates/owlrora-key-provider",
+    "crates/owlrora-server",
+]
 resolver = "3"
 
 [workspace.package]

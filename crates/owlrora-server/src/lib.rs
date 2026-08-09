@@ -12,6 +12,9 @@ use axum::{
 use rust_embed::Embed;
 use tokio::net::TcpListener;
 
+/// Public provider-neutral SPI used by custom statically composed server binaries.
+pub use owlrora_key_provider as key_provider;
+
 #[derive(Embed)]
 #[folder = "web/dist"]
 struct WebAssets;

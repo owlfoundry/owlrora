@@ -1,5 +1,7 @@
 # OwlRora Server
 
-`owlrora-server` is the OwlRora server executable and library. The published crate includes its production frontend assets and runs as a single process.
+`owlrora-server` is the server library and source package for the single `owlrora` executable — Routing and Observability for Reliable AI. The published crate includes production frontend assets; `owlrora serve` runs the current server foundation, while management CLI and stdio MCP modes remain planned.
 
-This crate currently provides only the runnable project foundation. Product and domain behavior will be defined separately.
+OwlRora is planned as a self-hosted, multi-tenant LLM gateway for protocol-native model routing, usage observability, reliability policy, and complete system/organization administration.
+
+This crate currently provides only the runnable server and embedded-frontend foundation. The gateway protocols and product capabilities are not implemented yet.

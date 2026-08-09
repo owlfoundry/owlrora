@@ -13,6 +13,9 @@
 **/coverage/
 **/test-results/
 
+# Local references
+/local-reference/
+
 # Python
 **/__pycache__/
 **/*.pyc
@@ -26,3 +29,4 @@
 .env
 .env.*
 !.env.example
+.anycap/

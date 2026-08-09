@@ -48,8 +48,10 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Test Rust sources
         run: cargo test --workspace --all-features --locked
-      - name: Verify server crate package
+      - name: Verify server crate packages
         run: scripts/test-server-package.sh
+      - name: Test release preparation
+        run: python3 scripts/release/test-prepare-release.py
       - name: Build server
         run: cargo build --release --locked --package owlrora-server
 

@@ -1,0 +1,100 @@
+name: Release CLI
+
+on:
+  push:
+    tags:
+      - "cli-v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-cli-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: owlrora
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            binary: owlrora
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            binary: owlrora
+          - os: macos-15
+            target: aarch64-apple-darwin
+            binary: owlrora
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: owlrora.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Prepare release manifests
+        run: python3 scripts/release/prepare_release.py
+      - name: Set up Rust
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add "${{ matrix.target }}" --toolchain stable
+      - name: Build CLI binary
+        shell: bash
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: cargo build --release --locked --package owlrora-server --bin owlrora --target "${{ matrix.target }}"
+      - name: Verify and archive CLI binary
+        shell: bash
+        env:
+          BINARY: ${{ matrix.binary }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          version="${GITHUB_REF_NAME#cli-v}"
+          test "$(target/$TARGET/release/$BINARY --version)" = "owlrora $version"
+          archive="owlrora-${version}-${TARGET}.tar.gz"
+          tar -czf "$archive" -C "target/$TARGET/release" "$BINARY"
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: owlrora-${{ matrix.target }}
+          path: owlrora-*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download CLI artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: owlrora-*
+          path: artifacts
+          merge-multiple: true
+      - name: Verify release assets
+        run: |
+          test "$(find artifacts -maxdepth 1 -name 'owlrora-*.tar.gz' -type f | wc -l)" -eq 5
+          sha256sum artifacts/owlrora-*.tar.gz > artifacts/SHA256SUMS
+      - name: Create CLI release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          version="${GITHUB_REF_NAME#cli-v}"
+          gh release create "$GITHUB_REF_NAME" artifacts/* \
+            --generate-notes \
+            --title "OwlRora CLI v${version}"

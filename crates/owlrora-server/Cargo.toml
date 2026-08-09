@@ -2,17 +2,22 @@
 name = "owlrora-server"
 version = "0.0.0-dev"
 edition.workspace = true
-description = "OwlRora web server"
+description = "Server foundation for the planned OwlRora AI gateway"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
-keywords = ["server", "self-hosted", "web"]
+keywords = ["ai", "llm", "gateway", "observability", "self-hosted"]
 categories = ["web-programming::http-server"]
 include = ["src/**", "web/dist/**", "Cargo.toml", "README.md"]
+
+[[bin]]
+name = "owlrora"
+path = "src/main.rs"
 
 [dependencies]
 axum = "0.8.9"
 mime_guess = "2.0.5"
+owlrora-key-provider = { version = "=0.0.0-dev", path = "../owlrora-key-provider" }
 rust-embed = { version = "8.11.0", features = ["debug-embed"] }
 tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread", "signal"] }
 tracing = "0.1.44"

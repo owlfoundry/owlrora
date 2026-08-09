@@ -12,6 +12,8 @@ FROM rust:bookworm AS rust-builder
 
 WORKDIR /workspace
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates/owlrora-key-provider/Cargo.toml crates/owlrora-key-provider/Cargo.toml
+COPY crates/owlrora-key-provider/src crates/owlrora-key-provider/src
 COPY crates/owlrora-server/Cargo.toml crates/owlrora-server/Cargo.toml
 COPY crates/owlrora-server/src crates/owlrora-server/src
 COPY --from=web-builder /workspace/crates/owlrora-server/web/dist crates/owlrora-server/web/dist
@@ -36,7 +38,7 @@ RUN apt-get update \
     && groupadd --gid 10001 owlrora \
     && useradd --uid 10001 --gid owlrora --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin owlrora
 
-COPY --from=rust-builder --chown=owlrora:owlrora /workspace/target/release/owlrora-server /usr/local/bin/owlrora-server
+COPY --from=rust-builder --chown=owlrora:owlrora /workspace/target/release/owlrora /usr/local/bin/owlrora
 COPY --chown=owlrora:owlrora LICENSE /usr/share/licenses/owlrora/LICENSE
 
 USER owlrora
@@ -44,4 +46,5 @@ ENV OWLRORA_ADDR=0.0.0.0:8080
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD curl --fail --silent --show-error http://127.0.0.1:8080/health >/dev/null || exit 1
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/owlrora-server"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/owlrora"]
+CMD ["serve"]

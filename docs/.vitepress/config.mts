@@ -2,7 +2,7 @@ import { defineConfig } from "vitepress";
 
 export default defineConfig({
   title: "OwlRora",
-  description: "OwlRora documentation",
+  description: "OwlRora — Routing and Observability for Reliable AI",
   cleanUrls: true,
   sitemap: {
     hostname: "https://owlrora-docs.owlfoundry.org",
@@ -11,6 +11,7 @@ export default defineConfig({
   themeConfig: {
     nav: [
       { text: "Home", link: "/" },
+      { text: "Overview", link: "/overview" },
       { text: "GitHub", link: "https://github.com/owlfoundry/owlrora" },
     ],
     socialLinks: [

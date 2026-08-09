@@ -27,8 +27,9 @@ build: web-build ## Build the production server
 	@cargo build --release --locked --package owlrora-server
 
 .PHONY: package-check
-package-check: web-build ## Build and verify the publishable server crate
+package-check: web-build ## Build and verify publishable crates and release preparation
 	@scripts/test-server-package.sh
+	@python3 scripts/release/test-prepare-release.py
 
 .PHONY: web-build
 web-build: ## Build the embedded frontend
@@ -40,7 +41,7 @@ web-dev: ## Run the Vite development server
 
 .PHONY: dev
 dev: web-build ## Build the frontend and run the server
-	@cargo run --locked --package owlrora-server
+	@cargo run --locked --package owlrora-server -- serve
 
 .PHONY: docs
 docs: ## Run the documentation development server

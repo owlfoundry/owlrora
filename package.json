@@ -2,6 +2,7 @@
   "name": "owlrora",
   "version": "0.0.0-dev",
   "private": true,
+  "description": "Routing and Observability for Reliable AI",
   "packageManager": "pnpm@11.20.0",
   "scripts": {
     "build": "pnpm --filter @owlrora/web build",

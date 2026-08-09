@@ -1,0 +1,29 @@
+flowchart LR
+    subgraph Shell[OwlRora Console]
+        direction TB
+        Top["Top bar: context switcher · readiness · actor"]
+        subgraph Body[Context workspace]
+            direction LR
+            subgraph Nav[Dark context sidebar]
+                direction TB
+                Brand["OwlRora"]
+                Overview["Overview"]
+                Identity["Identity & access"]
+                Catalog["Upstream catalog"]
+                Operations["Operations"]
+                Audit["Audit"]
+            end
+            subgraph Main[Light high-density content]
+                direction TB
+                Header["Breadcrumb · page title · primary action"]
+                Alert["Capability-impact warning"]
+                Metrics["Request · failure · cost · budget cards"]
+                Health["Runtime · coordination · custody · telemetry"]
+                Activity["Recent configuration activity table"]
+            end
+        end
+    end
+
+    Top --> Body
+    Brand --> Overview --> Identity --> Catalog --> Operations --> Audit
+    Header --> Alert --> Metrics --> Health --> Activity

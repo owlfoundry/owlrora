@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 concurrency:
   group: release-server-${{ github.ref }}
@@ -14,24 +15,59 @@ concurrency:
 
 jobs:
   publish:
-    name: Publish owlrora-server
+    name: Publish crates and server image
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Prepare release manifest
+      - name: Prepare release manifests
         run: python3 scripts/release/prepare_release.py
       - name: Require crates.io token
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: test -n "$CARGO_REGISTRY_TOKEN"
-      - name: Publish crate
+      - name: Publish server crates
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          VERSION: ${{ github.ref_name }}
         run: |
+          version="${GITHUB_REF_NAME#server-v}"
           scripts/release/publish-crate.sh \
-            crates/owlrora-server/Cargo.toml "${VERSION#server-v}"
+            crates/owlrora-key-provider/Cargo.toml "$version"
+          for attempt in {1..12}; do
+            if scripts/release/publish-crate.sh \
+              crates/owlrora-server/Cargo.toml "$version"; then
+              break
+            fi
+            if [[ "$attempt" == 12 ]]; then
+              exit 1
+            fi
+            sleep 10
+          done
+      - name: Build server image
+        run: |
+          version="${GITHUB_REF_NAME#server-v}"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          tag="${version//+/_}"
+          docker build \
+            --build-arg "OWLRORA_VERSION=$version" \
+            --build-arg "VCS_REF=$GITHUB_SHA" \
+            --tag "$image:$tag" \
+            .
+          scripts/docker/smoke-server-image.sh "$image:$tag"
+      - name: Log in to GitHub Container Registry
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: echo "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Publish server image
+        run: |
+          version="${GITHUB_REF_NAME#server-v}"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          tag="${version//+/_}"
+          docker push "$image:$tag"
+          if [[ "$version" != *-* && "$version" != *+* ]]; then
+            docker tag "$image:$tag" "$image:latest"
+            docker push "$image:latest"
+          fi

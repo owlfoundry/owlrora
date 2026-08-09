@@ -2,7 +2,7 @@
   "name": "@owlrora/docs",
   "version": "0.0.0-dev",
   "private": true,
-  "description": "OwlRora documentation",
+  "description": "Documentation for OwlRora — Routing and Observability for Reliable AI",
   "license": "BSD-3-Clause",
   "type": "module",
   "packageManager": "pnpm@11.20.0",
