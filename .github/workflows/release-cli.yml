@@ -88,13 +88,16 @@ jobs:
       - name: Verify release assets
         run: |
           test "$(find artifacts -maxdepth 1 -name 'owlrora-*.tar.gz' -type f | wc -l)" -eq 5
-          sha256sum artifacts/owlrora-*.tar.gz > artifacts/SHA256SUMS
+          (cd artifacts && sha256sum owlrora-*.tar.gz > SHA256SUMS)
       - name: Create CLI release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           version="${GITHUB_REF_NAME#cli-v}"
-          gh release create "$GITHUB_REF_NAME" artifacts/* \
-            --generate-notes \
-            --title "OwlRora CLI v${version}"
+          release_args=(--generate-notes --title "OwlRora CLI v${version}")
+          version_without_build="${version%%+*}"
+          if [[ "$version_without_build" == *-* ]]; then
+            release_args+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" artifacts/* "${release_args[@]}"

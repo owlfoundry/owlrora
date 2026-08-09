@@ -61,13 +61,36 @@ jobs:
         env:
           GHCR_TOKEN: ${{ github.token }}
         run: echo "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-      - name: Publish server image
+      - name: Publish immutable server image tag
+        env:
+          GHCR_TOKEN: ${{ github.token }}
         run: |
           version="${GITHUB_REF_NAME#server-v}"
-          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          repository="${GITHUB_REPOSITORY,,}"
+          image="ghcr.io/$repository"
           tag="${version//+/_}"
-          docker push "$image:$tag"
-          if [[ "$version" != *-* && "$version" != *+* ]]; then
-            docker tag "$image:$tag" "$image:latest"
-            docker push "$image:latest"
-          fi
+          registry_token="$(curl --fail --silent --show-error \
+            --user "$GITHUB_ACTOR:$GHCR_TOKEN" \
+            --get \
+            --data-urlencode 'service=ghcr.io' \
+            --data-urlencode "scope=repository:$repository:pull" \
+            'https://ghcr.io/token' \
+            | jq --exit-status --raw-output '.token // .access_token')"
+          test -n "$registry_token"
+          status="$(curl --silent --show-error \
+            --header "Authorization: Bearer $registry_token" \
+            --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+            --output /dev/null --write-out '%{http_code}' \
+            "https://ghcr.io/v2/$repository/manifests/$tag")"
+          case "$status" in
+            200)
+              echo "$image:$tag already exists; preserving its original digest"
+              ;;
+            404)
+              docker push "$image:$tag"
+              ;;
+            *)
+              echo "GHCR returned HTTP $status while checking $image:$tag" >&2
+              exit 1
+              ;;
+          esac

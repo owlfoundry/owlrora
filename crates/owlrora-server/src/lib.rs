@@ -12,7 +12,7 @@ use axum::{
 use rust_embed::Embed;
 use tokio::net::TcpListener;
 
-/// Public provider-neutral SPI used by custom statically composed server binaries.
+/// Prospective provider-neutral SPI; custom-provider registration is not implemented yet.
 pub use owlrora_key_provider as key_provider;
 
 #[derive(Embed)]

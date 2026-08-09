@@ -36,6 +36,7 @@ grep -qx README.md <<< "$key_provider_files"
 grep -qx src/lib.rs <<< "$key_provider_files"
 
 server_files="$(tar -tzf "$server_archive" | sed 's#^[^/]*/##')"
+grep -qx LICENSE <<< "$server_files"
 grep -qx README.md <<< "$server_files"
 grep -qx src/main.rs <<< "$server_files"
 grep -qx web/dist/index.html <<< "$server_files"

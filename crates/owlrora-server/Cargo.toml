@@ -8,7 +8,7 @@ repository.workspace = true
 readme = "README.md"
 keywords = ["ai", "llm", "gateway", "observability", "self-hosted"]
 categories = ["web-programming::http-server"]
-include = ["src/**", "web/dist/**", "Cargo.toml", "README.md"]
+include = ["src/**", "web/dist/**", "Cargo.toml", "README.md", "LICENSE"]
 
 [[bin]]
 name = "owlrora"

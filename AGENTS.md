@@ -64,7 +64,7 @@ OwlRora is the server foundation for a planned self-hosted AI gateway — Routin
 
 - Keep committed `owlrora-key-provider` and `owlrora-server` versions, plus their exact internal dependency requirement, at the reserved `0.0.0-dev` development sentinel.
 - CLI tags use `cli-v<semver>` and publish only five platform archives for the single `owlrora` binary plus checksums; they publish no crate or container.
-- Server tags use `server-v<semver>` and publish `owlrora-key-provider` then `owlrora-server` at one exact version, plus a smoke-tested GHCR image; stable versions also promote that exact image to `latest`.
+- Server tags use `server-v<semver>` and publish `owlrora-key-provider` then `owlrora-server` at one exact version, plus a smoke-tested immutable GHCR version tag. Do not publish or promote a mutable `latest` tag; reruns preserve any existing version-tag digest.
 - Do not commit a release-only version bump. `scripts/release/prepare_release.py` materializes either tag version uniformly in manifests, exact internal requirements, and `Cargo.lock` inside the workflow.
 - Do not run `cargo publish` manually. Do not add main-branch comparisons, commit-history checks, or ordinary CI execution to release workflows.
 - Configure `CARGO_REGISTRY_TOKEN` before an initial server tag. A rerun may publish a crate only when its crates.io checksum exactly matches the package generated from tagged source.
