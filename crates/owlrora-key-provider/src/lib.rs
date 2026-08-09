@@ -2,9 +2,11 @@
 
 //! Provider-neutral configuration-secret custody capabilities for `OwlRora`.
 //!
-//! Implementations are trusted code statically composed into a custom server binary. This crate
-//! owns only bounded values and exact-context seal/open contracts; it owns no `OwlRora` policy,
-//! persistence, HTTP, configuration parsing, or vendor integration.
+//! These contracts are intended for trusted implementations that will be statically composed into
+//! a custom server binary. The current server foundation does not yet provide provider registration
+//! or a custom-composition builder. This crate owns only bounded values and exact-context seal/open
+//! contracts; it owns no `OwlRora` policy, persistence, HTTP, configuration parsing, or vendor
+//! integration.
 
 mod context;
 mod error;
