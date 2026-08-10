@@ -7,7 +7,7 @@
 OwlRora is a self-hosted AI gateway for routing requests across models and providers, observing usage and latency, and applying reliability and tenant policy in one place.
 
 > [!IMPORTANT]
-> OwlRora is currently at the runnable-foundation and product-design stage. The gateway protocols and management capabilities described below are product direction, not shipped behavior. The current server embeds the React shell and exposes `GET /health`.
+> OwlRora is currently at the runnable-foundation and product-design stage. The gateway protocols and management capabilities described below are product direction, not shipped behavior. The current `owlrora-server` embeds the React shell and exposes `GET /health`; the independent `owlrora` CLI currently provides help, version, and bounded checksum-verified self-update.
 
 ## RORA
 
@@ -60,20 +60,21 @@ The `seed_admin` user may administer the deployment directly or promote an exist
 - **Protocol-native proxying** — preserve Anthropic, OpenAI, and Gemini semantics rather than forcing one lossy universal request model.
 - **Composable upstream catalog** — model credentials, endpoints, deployments, and route targets as separate reusable resources.
 - **Approximate operational enforcement** — use bounded local allowance and optional Redis-compatible coordination with availability-first bounded recovery, without pretending to be a billing ledger.
-- **Encrypted recoverable secrets** — hash durable management keys and gateway keys; directly encrypt upstream secrets from an explicit environment root in the official binary, with a small static-composition SPI for user-provided custody.
+- **Encrypted recoverable secrets** — hash durable management keys and gateway keys; directly encrypt upstream secrets from an explicit environment root in the official server binary, with a small static-composition SPI for user-provided custody.
 - **Observable routing** — retain structured evidence explaining selection, attempts, latency, usage, and cost without default prompt/response logs.
-- **First-party automation** — ship an official CLI and local stdio MCP mode in the same package; both use only scoped public management HTTP APIs and retain server authorization, ETag, audit, and one-time-secret rules.
+- **First-party automation** — ship an independent official CLI package containing the `owlrora` management client and local stdio MCP mode; both use only scoped public management HTTP APIs and retain server authorization, ETag, audit, and one-time-secret rules.
 
 ## Repository status and specifications
 
-The repository currently contains a Rust/Axum server foundation, the provider-neutral key-custody SPI, an embedded React frontend, isolated crate packaging tests, container packaging, documentation, and separate CLI-binary/server release automation. Product implementation has not started.
+The repository currently contains a Rust/Axum server foundation, an independently packaged `owlrora` CLI with native self-update, the provider-neutral key-custody SPI, an embedded React frontend, isolated crate packaging tests, container packaging, documentation, and separate CLI/server release automation. Product implementation has not started.
 
 Target design lives under [`spec/`](spec/README.md). The thirteen specifications proceed from product and system boundaries through identity, authorization, upstream catalog, protocols, routing, budgets, observability, local-cache scale, management, operations, and implementation architecture. Public documentation lives under [`docs/`](docs/index.md) and distinguishes current behavior from product direction.
 
 ## Repository layout
 
+- `crates/owlrora-cli/` — independently versioned `owlrora` CLI, native updater, and planned stdio MCP/client commands;
 - `crates/owlrora-key-provider/` — provider-neutral custom secret-custody SPI;
-- `crates/owlrora-server/` — Rust server/library, `owlrora` executable, CLI/MCP foundations, and packaged frontend assets;
+- `crates/owlrora-server/` — Rust server/library, `owlrora-server` executable, and packaged frontend assets;
 - `apps/web/` — React and Vite frontend source;
 - `spec/` — normative target product and domain specifications;
 - `docs/` — public VitePress documentation;
@@ -101,6 +102,13 @@ make dev
 ```
 
 The application listens on `http://localhost:8080` by default. Override the listener with `OWLRORA_ADDR`.
+
+Inspect the independent CLI and its implemented update command:
+
+```bash
+cargo run --locked --package owlrora-cli -- --help
+cargo run --locked --package owlrora-cli -- update --version 0.0.0-dev --dry-run --force
+```
 
 For frontend development with Vite:
 

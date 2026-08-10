@@ -26,20 +26,22 @@ The native LLM compatibility endpoints remain data-plane APIs. The management MC
 
 ## 2. Packaging and process model
 
-The `owlrora-server` package installs one official executable named `owlrora`:
+The server and its remote management clients have independent package and executable boundaries:
 
 ```text
-owlrora serve
+owlrora-server
+
 owlrora profile ...
 owlrora system ...
 owlrora organization ...
 owlrora me ...
+owlrora update ...
 owlrora mcp ...
 ```
 
-`serve` starts the OwlRora server roles. The other command families are management API clients. `mcp` runs a local MCP server over standard input/output for an MCP host to launch as a child process.
+The `owlrora-server` package installs `owlrora-server`, which starts the server roles directly without a `serve` subcommand. The independently published `owlrora-cli` package installs `owlrora`; its ordinary command families are bounded management API clients, `update` updates only this CLI executable, and `mcp` runs a local MCP server over standard input/output for an MCP host to launch as a child process.
 
-CLI and MCP support does not create another product crate, daemon, database schema, privileged sidecar, or network service. The same typed client library and checked API descriptors back both adapters inside `owlrora-server`. `cli-v<semver>` releases publish platform archives of this package's `owlrora` binary only; `server-v<semver>` releases publish the server crate family and container. The CLI release never publishes a duplicate CLI crate. The official MCP mode does not listen on an unauthenticated TCP or HTTP socket.
+`owlrora-cli` does not depend on or launch `owlrora-server`, contain server private state, or create another daemon, database schema, privileged sidecar, or network service. The typed HTTP client and stdio MCP adapter remain in the CLI package. Checked management-operation descriptors generate or validate both server contracts and committed client bindings without introducing an in-process privileged path; a shared crate is extracted only when real stable types make it simpler than generated package-local code. `cli-v<semver>` releases publish the `owlrora-cli` crate plus five platform archives and checksums. `server-v<semver>` releases publish the server crate family and container. The official MCP mode does not listen on an unauthenticated TCP or HTTP socket.
 
 ## 3. Authentication profiles
 
@@ -65,7 +67,7 @@ A profile selects credentials, not authority. The server authenticates the Manag
 
 ### 4.1 Command inventory
 
-The CLI mirrors the management API by stable resource families and explicit actions. Representative commands are:
+The CLI mirrors the management API by stable resource families and explicit actions. Local profile, output, completion, `update`, and stdio-MCP lifecycle commands are client concerns rather than management operations and never receive server authority. Representative management commands are:
 
 ```text
 owlrora system users list
@@ -102,6 +104,20 @@ Safe idempotent queries may retry bounded transient failures. A command retries 
 Write-only secret inputs use standard input or an explicit protected file source, not ordinary flags. One-time secret results are written exactly once to the selected destination. Human output warns before printing to a terminal; machine output never adds the value to logs, profile state, shell completion, diagnostics, or retry storage.
 
 The CLI does not offer a command to recover an already disclosed management key, gateway key, provider secret, OAuth token, or seed-administrator key.
+
+### 4.4 Native self-update
+
+`owlrora update` updates only the independently installed `owlrora` CLI; it never updates, restarts, or replaces `owlrora-server` or its container. Its public controls are:
+
+```text
+owlrora update [--version <SEMVER>] [--dry-run] [--force] [--install-dir <DIRECTORY>]
+```
+
+Without `--version`, the client queries a bounded number of GitHub Release pages and selects the highest canonical stable SemVer whose tag is exactly `cli-v<semver>`, whose release is neither draft nor prerelease, and whose SemVer has no prerelease identifiers or build metadata. It ignores `server-v*` and every unrelated tag. An explicit version accepts plain SemVer, `v<semver>`, or `cli-v<semver>` and resolves to that exact versioned CLI release, including an explicitly selected prerelease; build metadata is rejected because it does not define SemVer precedence. A same-version update is a successful no-op; a reinstall or downgrade requires `--force`. A dry run resolves the exact release, target archive, and destination but downloads no release asset and changes no filesystem state.
+
+The supported native asset set is closed: GNU Linux x86_64/aarch64 and macOS x86_64/aarch64 use `.tar.gz`; Windows MSVC x86_64 uses `.zip`. Archive names are exactly `owlrora-cli-<version>-<target>.<extension>`. The release repository is compiled in rather than selected by environment or configuration. Initial requests and every redirect are restricted to bounded GitHub/GitHubusercontent HTTPS origins with Rustls certificate verification, connection/request timeouts, bounded response sizes, and a non-secret client user agent. `SHA256SUMS` must contain exactly one syntactically valid entry for the selected archive. The downloaded bytes must match that digest before parsing. The checksum and archive share the GitHub Release trust boundary, so this is corruption and asset-mismatch detection, not an independent signature or protection from compromised release authority.
+
+A valid archive contains exactly one top-level regular file named `owlrora` or `owlrora.exe`. Absolute, nested, traversal, link, device, duplicate, directory, and extra entries fail before installation; expanded binary size is bounded, and ZIP entry cardinality is checked independently of filename-index deduplication. A non-dry-run updater acquires a non-blocking installation-directory lock before release discovery and holds it through download, verification, and replacement. It stages and syncs the verified binary in that same directory, restores executable permissions as applicable, and uses a cross-platform self-replacement primitive against the exact running executable path even when the executable was renamed. An explicit alternate install directory replaces only its `owlrora` destination with same-directory staging and rollback on platforms that cannot overwrite in place; rollback failures retain and report the backup path, while post-success cleanup failures do not misreport the replacement as failed. No background check or automatic update mutates the installation.
 
 ## 5. MCP contract
 
@@ -199,4 +215,8 @@ Contract and end-to-end tests cover:
 - every Gateway-key create requires a non-empty stable route-ID allowlist and finite overall budget; route authorization never accepts provider prefixes, upstream model strings, provider allowlists, or an implicit all-future-routes marker;
 - system-provider origin-budget updates require system authority, BYOK origin-budget updates require organization budget authority, both preserve `enforce | record_only`, and every actual mixed-route attempt is attributed to the target-derived origin while also charging the key overall budget;
 - direct JWT LLM usage creates no fabricated Gateway-key, origin-budget, rate, or concurrency enforcement identity;
-- packaged execution using only public HTTP APIs, including against a different OwlRora node from the one that launched the client.
+- packaged execution using only public HTTP APIs, including against a different OwlRora node from the one that launched the client;
+- CLI update release selection rejects drafts, mislabeled prereleases, build metadata, noncanonical and non-CLI tags, and unbounded pagination;
+- update requests start at the compiled-in repository, redirect only among the allowed GitHub HTTPS hosts, enforce timeout/body limits, and require one exact archive checksum entry while rejecting malformed, missing, duplicate, or mismatched values;
+- tar/zip fixtures reject absolute and traversal paths, nested entries, links, non-files, duplicate central-directory entries, oversized expansion, and extra entries while accepting the exact one-file platform inventory;
+- dry-run filesystem purity, same-version, force, downgrade, full-transaction install locking, non-running destination replacement, packaged `--version`, exact renamed running paths, rollback failures, and Unix/Windows child-process self-replacement behavior.

@@ -2,6 +2,8 @@
 set -euo pipefail
 
 image="${1:?usage: smoke-server-image.sh <image>}"
+version_output="$(docker run --rm "$image" --version)"
+grep --quiet --extended-regexp '^owlrora-server [0-9A-Za-z.+-]+$' <<<"$version_output"
 container="$(docker run --detach --publish 127.0.0.1::8080 "$image")"
 
 cleanup() {

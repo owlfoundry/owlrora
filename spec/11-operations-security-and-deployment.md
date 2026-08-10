@@ -32,7 +32,7 @@ Control-plane, data-plane, secret-controller, and background-worker roles share 
 - PostgreSQL;
 - optional in-process or local Redis coordinator;
 - explicit `OWLRORA_SEED_ADMIN_API_KEY` for every management-enabled process;
-- explicit `OWLRORA_SECRET_ROOT` environment value for the official binary;
+- explicit `OWLRORA_SECRET_ROOT` environment value for the official server binary;
 - optional local OTel collector;
 - explicit loopback upstream endpoint allowance.
 
@@ -151,9 +151,9 @@ ProtectedSecretVersion {
 }
 ```
 
-For the bundled `software-xchacha20-poly1305-v1` format, the opaque envelope encodes the suite, nonce, and ciphertext. The exact context reconstructs `installation_id` from the singleton installation row and the remaining fields from the protected record/owner. Copying an envelope to another installation, organization, owner, field, generation, custody ID, or format fails authentication. There is no per-secret DEK, wrapped-DEK hierarchy, local key-provider object, key file, or KMS dependency in the official binary.
+For the bundled `software-xchacha20-poly1305-v1` format, the opaque envelope encodes the suite, nonce, and ciphertext. The exact context reconstructs `installation_id` from the singleton installation row and the remaining fields from the protected record/owner. Copying an envelope to another installation, organization, owner, field, generation, custody ID, or format fails authentication. There is no per-secret DEK, wrapped-DEK hierarchy, local key-provider object, key file, or KMS dependency in the official server binary.
 
-The official binary requires the environment root whenever bundled encrypted records may be created or opened. There is no compiled, fixed, passphrase-derived, silently generated, or encryption-disabled fallback.
+The official server binary requires the environment root whenever bundled encrypted records may be created or opened. There is no compiled, fixed, passphrase-derived, silently generated, or encryption-disabled fallback.
 
 ### 6.2 Custom custody SPI
 

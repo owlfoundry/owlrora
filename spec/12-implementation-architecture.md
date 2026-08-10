@@ -9,8 +9,8 @@ OwlRora is a Rust modular monolith:
 - one PostgreSQL schema owned by the application;
 - one optional Redis-compatible coordination port;
 - one embedded React console;
-- one official executable providing server, CLI, and local stdio MCP modes;
-- one server package containing the product modules and management clients;
+- one independently released `owlrora` executable/package containing the remote management CLI and local stdio MCP mode;
+- one `owlrora-server` package/executable containing the server product modules;
 - one small published key-provider SPI package only because third-party custody implementations need a stable compile-time boundary.
 
 The architecture avoids microservice network boundaries while keeping modules separable by dependency direction. High request volume alone does not justify a service split because the data plane already scales through identical server replicas.
@@ -21,7 +21,7 @@ The architecture avoids microservice network boundaries while keeping modules se
 flowchart TB
     CLI[CLI adapter] --> MGMT_CLIENT[Typed management HTTP client]
     MCP[stdio MCP adapter] --> MGMT_CLIENT
-    MGMT_CLIENT --> HTTP[HTTP adapters]
+    MGMT_CLIENT -->|Versioned HTTPS; no in-process path| HTTP[HTTP adapters]
     HTTP --> APP[Application commands and queries]
     HTTP --> GW[LLM gateway orchestrator]
 
@@ -52,10 +52,18 @@ HTTP handlers are thin. Domain invariants do not live in route code. Upstream tr
 
 ## 3. Packages and modules
 
-OwlRora does not split domain, control plane, gateway, protocols, secrets, and infrastructure into separate crates by default. They compile together in `owlrora-server`; module visibility and dependency rules provide the internal boundaries.
+OwlRora does not split server-side domain, control plane, gateway, protocols, secrets, and infrastructure into separate crates by default. They compile together in `owlrora-server`; module visibility and dependency rules provide the internal boundaries. The remote CLI/stdio-MCP client is an intentional independent package because it has a separate release lifecycle and dependency/security surface.
 
 ```text
 crates/
+  owlrora-cli/
+    src/client/                 typed public-HTTP client and generated bindings
+    src/profile/                endpoint and credential-source profiles
+    src/commands/               management command families and rendering
+    src/mcp/                    typed stdio toolsets and MCP protocol adapter
+    src/update.rs               bounded checksum-verified native self-update
+    src/main.rs                 owlrora client entry point
+
   owlrora-key-provider/
     src/context.rs              bounded canonical protection context
     src/secrets.rs              object-safe seal/open capability traits
@@ -69,24 +77,21 @@ crates/
     src/protocols/              Anthropic, OpenAI, Gemini, upstream transports
     src/secrets/                bundled environment-root software encryption
     src/adapters/               PostgreSQL, Redis, JWT/JWKS, telemetry
-    src/http/                   management, compatibility, operations
-    src/management_client/      typed public-HTTP client and operation descriptors
-    src/cli/                    command families, profiles, and rendering
-    src/mcp/                    typed stdio toolsets and MCP protocol adapter
+    src/http/                   management, compatibility, operations/descriptors
     src/workers/                publication, credentials, aggregates, cleanup
     src/frontend/               embedded assets and SPA routing
     src/composition.rs          official and custom-provider composition
     src/lib.rs
-    src/main.rs                 owlrora serve/CLI/MCP mode selection
+    src/main.rs                 owlrora-server process entry point
 ```
 
 `owlrora-key-provider` exists only as a small provider-neutral SPI for deployments that need custom secret custody. It contains no server, database, HTTP, configuration parser, vendor SDK, or OwlRora domain repository. The official server repository implements no AWS, GCP, Azure, Vault, HSM, or other remote provider crate.
 
 The official `owlrora-server` binary composes the bundled software encryption implementation. A third party implements the SPI in an independent crate and statically links it into a custom binary through the public high-level server composition API. OwlRora does not scan plugin directories, load Rust dynamic libraries, supervise provider subprocesses, or define a sidecar protocol.
 
-Gateway, management, worker, CLI, and MCP roles remain modules in the same package and `owlrora` executable. `owlrora serve` may run all server roles or only selected roles; `owlrora mcp` is a local stdio child process and CLI commands are bounded client invocations. Mode selection does not produce separate product crates, binaries, schemas, privileged in-process client paths, or network services.
+Gateway, management HTTP, and worker roles remain modules in the `owlrora-server` package and run in the `owlrora-server` executable. The separate `owlrora-cli` package installs `owlrora`; its command families are bounded remote client invocations and `owlrora mcp` is a local stdio child process. The CLI package neither links server internals nor gains an in-process path to domain/application services. This package split creates no additional durable schema, privileged sidecar, hosted MCP endpoint, or server process.
 
-The published `owlrora-key-provider` package is versioned and published before `owlrora-server`. The server embeds production frontend assets and requires no unpublished sibling path; workspace development may use a local path override, while packaged builds resolve the published SPI dependency.
+`cli-v<semver>` independently versions and publishes `owlrora-cli`. `server-v<semver>` versions the server family, publishing `owlrora-key-provider` before `owlrora-server`. The server embeds production frontend assets and requires no unpublished sibling path; workspace development may use a local path override for the SPI, while packaged builds resolve its published exact dependency. The CLI has no dependency on either server-family crate. Checked server operation descriptors generate or validate committed package-local CLI bindings, and CI rejects drift; a shared contract crate is introduced only if real stable public types later justify it.
 
 ## 4. Dependency direction
 
@@ -131,7 +136,7 @@ Application services authorize and audit secret mutation, then call the selected
 
 Adapter modules implement ports. `owlrora-server` composes them and translates HTTP/browser contracts to application requests. Management-key verification produces the built-in `seed_admin` principal or the exact durable deployment/organization Management-key resource principal plus key identity/version, resource scope, and ceiling as authentication evidence. It never resolves the durable key's creator as a local user. The HTTP adapter does not grant capabilities itself, and the ordinary application authorizer and audit orchestration remain mandatory.
 
-The CLI and MCP adapters always use the typed public-HTTP client, even when installed beside a server. They cannot receive repositories, application services, deployment configuration, or raw in-process secret capabilities. Their operation inventory derives from the same checked descriptors as management OpenAPI.
+The CLI and MCP adapters in `owlrora-cli` always use the typed public-HTTP client, even when installed beside a server. They cannot receive repositories, application services, deployment configuration, or raw in-process secret capabilities. Their operation inventory derives from the same checked descriptors as management OpenAPI, with generated bindings committed into the independently packageable CLI source.
 
 No repository returns an Axum response. No HTTP handler embeds SQL or decides authorization. No custom custody provider decides authorization. No provider transport writes tenant policy.
 
@@ -312,11 +317,11 @@ Performance tests publish request mix and measure PostgreSQL/Redis operation rat
 
 ## 12. Boundary evolution
 
-The default is to keep product modules inside `owlrora-server`. Beyond the key-provider SPI, a module becomes another crate only when an external implementation boundary, independently publishable API, or material dependency/security boundary makes the package split simpler than module visibility. It becomes a separate process only with measured evidence of:
+The default is to keep server product modules inside `owlrora-server`, while remote CLI and stdio-MCP client modules remain together in `owlrora-cli`. Beyond that client boundary and the key-provider SPI, a module becomes another crate only when an external implementation boundary, independently publishable API, or material dependency/security boundary makes the package split simpler than module visibility. It becomes a separate process only with measured evidence of:
 
 - an incompatible resource/scaling profile;
 - a required independent security or fault boundary;
 - an independently operated lifecycle;
 - a clean API and data owner that does not introduce distributed transactions.
 
-Protocol breadth, frontend/CLI/MCP completeness, or ten million daily requests do not alone require microservices. The stable unit remains one complete OwlRora package and executable unless evidence proves otherwise.
+Protocol breadth, frontend/CLI/MCP completeness, or ten million daily requests do not alone require microservices. The stable server unit remains the complete `owlrora-server` modular monolith; the independently installable `owlrora-cli` remains a stateless remote client rather than a second service.

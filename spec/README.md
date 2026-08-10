@@ -72,9 +72,9 @@ A model route is not an alias. Its client-facing model key resolves a policy obj
 12. The normal data path performs no PostgreSQL operation and emits no synchronous raw request log.
 13. A request captures one runtime generation before authentication and uses it through dispatch. Runtime-affecting commits produce a contiguous commit-ordered journal, and generations are derived under one PostgreSQL MVCC/revision fence; PostgreSQL remains durable authority and Redis remains bounded coordination state.
 14. Prompts, responses, authorization headers, and provider credentials are excluded from logs and telemetry by default.
-15. OwlRora-persisted non-recoverable bearer values are stored only as SHA-256 digests. The management-only seed-administrator key remains solely in deployment configuration. The official binary directly encrypts recoverable secrets from an environment root; independent statically linked custody implementations use the small published SPI.
-16. The deployable system is a Rust modular monolith with an embedded React console plus an official CLI and local stdio MCP mode. Product modules and clients compile together in `owlrora-server`; only the third-party custody SPI requires a separate package.
-17. CLI and MCP call only public management HTTP APIs; full tool coverage never bypasses Management-key resource scope, current key policy/administrator grant, tenant qualification, `ETag`, audit, or one-time-secret semantics.
+15. OwlRora-persisted non-recoverable bearer values are stored only as SHA-256 digests. The management-only seed-administrator key remains solely in deployment configuration. The official server binary directly encrypts recoverable secrets from an environment root; independent statically linked custody implementations use the small published SPI.
+16. The deployable system is the `owlrora-server` Rust modular monolith with an embedded React console. The independently released `owlrora-cli` package installs the remote `owlrora` management CLI and local stdio MCP mode without linking server internals; the third-party custody boundary remains the small `owlrora-key-provider` SPI.
+17. CLI and MCP call only public management HTTP APIs; full tool coverage never bypasses Management-key resource scope, current key policy/administrator grant, tenant qualification, `ETag`, audit, or one-time-secret semantics. Native CLI self-update accepts only bounded checksum-verified `cli-v*` assets and never updates the server.
 
 ## Product boundary
 

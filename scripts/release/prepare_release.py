@@ -8,16 +8,22 @@ from pathlib import Path
 
 DEVELOPMENT_VERSION = "0.0.0-dev"
 TAG_PREFIXES = {"cli": "cli-v", "server": "server-v"}
-PACKAGE_MANIFESTS = (
-    Path("crates/owlrora-key-provider/Cargo.toml"),
-    Path("crates/owlrora-server/Cargo.toml"),
-)
-LOCK_PACKAGES = ("owlrora-key-provider", "owlrora-server")
+COMPONENT_MANIFESTS = {
+    "cli": (Path("crates/owlrora-cli/Cargo.toml"),),
+    "server": (
+        Path("crates/owlrora-key-provider/Cargo.toml"),
+        Path("crates/owlrora-server/Cargo.toml"),
+    ),
+}
+COMPONENT_LOCK_PACKAGES = {
+    "cli": ("owlrora-cli",),
+    "server": ("owlrora-key-provider", "owlrora-server"),
+}
 SEMVER = re.compile(
     r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
     r"(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
     r"(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?"
-    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+    r"$"
 )
 
 
@@ -45,22 +51,29 @@ def lock_version(lockfile: Path, package: str) -> str:
     return matches[0]
 
 
-def observed_versions(root: Path) -> list[str]:
-    values = [package_version(root / manifest) for manifest in PACKAGE_MANIFESTS]
-    values.append(
-        dependency_version(
-            root / "crates/owlrora-server/Cargo.toml", "owlrora-key-provider"
-        ).removeprefix("=")
+def observed_versions(root: Path, component: str) -> list[str]:
+    values = [
+        package_version(root / manifest) for manifest in COMPONENT_MANIFESTS[component]
+    ]
+    if component == "server":
+        values.append(
+            dependency_version(
+                root / "crates/owlrora-server/Cargo.toml", "owlrora-key-provider"
+            ).removeprefix("=")
+        )
+    values.extend(
+        lock_version(root / "Cargo.lock", package)
+        for package in COMPONENT_LOCK_PACKAGES[component]
     )
-    values.extend(lock_version(root / "Cargo.lock", package) for package in LOCK_PACKAGES)
     return values
 
 
-def validate_uniform_state(root: Path, expected: str) -> None:
-    values = observed_versions(root)
+def validate_component_state(root: Path, component: str, expected: str) -> None:
+    values = observed_versions(root, component)
     if any(value != expected for value in values):
         raise RuntimeError(
-            f"release state is not uniformly {expected}: {', '.join(values)}"
+            f"{component} release state is not uniformly {expected}: "
+            + ", ".join(values)
         )
 
 
@@ -72,22 +85,23 @@ def replace_once(path: Path, pattern: str, replacement: str) -> None:
     path.write_text(updated, encoding="utf-8")
 
 
-def materialize(root: Path, version: str) -> None:
-    for relative in PACKAGE_MANIFESTS:
+def materialize(root: Path, component: str, version: str) -> None:
+    for relative in COMPONENT_MANIFESTS[component]:
         replace_once(
             root / relative,
             rf'^version = "{re.escape(DEVELOPMENT_VERSION)}"$',
             f'version = "{version}"',
         )
 
-    replace_once(
-        root / "crates/owlrora-server/Cargo.toml",
-        rf'(owlrora-key-provider = \{{ version = ")={re.escape(DEVELOPMENT_VERSION)}(", path = "\.\./owlrora-key-provider" \}})',
-        rf"\g<1>={version}\g<2>",
-    )
+    if component == "server":
+        replace_once(
+            root / "crates/owlrora-server/Cargo.toml",
+            rf'(owlrora-key-provider = \{{ version = ")={re.escape(DEVELOPMENT_VERSION)}(", path = "\.\./owlrora-key-provider" \}})',
+            rf"\g<1>={version}\g<2>",
+        )
 
     lockfile = root / "Cargo.lock"
-    for package in LOCK_PACKAGES:
+    for package in COMPONENT_LOCK_PACKAGES[component]:
         replace_once(
             lockfile,
             rf'(\[\[package\]\]\nname = "{re.escape(package)}"\nversion = "){re.escape(DEVELOPMENT_VERSION)}("$)',
@@ -104,15 +118,24 @@ def validate_request(component: str, version: str) -> None:
 
 def prepare(root: Path, component: str, version: str) -> None:
     validate_request(component, version)
-    values = observed_versions(root)
-    if all(value == version for value in values):
+    selected = observed_versions(root, component)
+    other_component = "server" if component == "cli" else "cli"
+    unrelated = observed_versions(root, other_component)
+
+    if all(value == version for value in selected) and all(
+        value == DEVELOPMENT_VERSION for value in unrelated
+    ):
         return
-    if not all(value == DEVELOPMENT_VERSION for value in values):
+    if not all(value == DEVELOPMENT_VERSION for value in selected + unrelated):
         raise RuntimeError(
-            "refusing partially prepared or stale release state: " + ", ".join(values)
+            "refusing partially prepared or stale release state: "
+            f"{component}={','.join(selected)}; "
+            f"{other_component}={','.join(unrelated)}"
         )
-    materialize(root, version)
-    validate_uniform_state(root, version)
+
+    materialize(root, component, version)
+    validate_component_state(root, component, version)
+    validate_component_state(root, other_component, DEVELOPMENT_VERSION)
 
 
 def environment_request() -> tuple[str, str] | None:

@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/owlrora-cli",
     "crates/owlrora-key-provider",
     "crates/owlrora-server",
 ]

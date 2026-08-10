@@ -28,13 +28,13 @@ features:
 ---
 
 ::: warning Current status
-OwlRora is currently at the runnable-foundation and product-design stage. The LLM gateway and management capabilities described here are product direction, not shipped behavior. The current server embeds the frontend shell and exposes `GET /health`.
+OwlRora is currently at the runnable-foundation and product-design stage. The LLM gateway and management capabilities described here are product direction, not shipped behavior. The current `owlrora-server` embeds the frontend shell and exposes `GET /health`; the separate `owlrora` CLI currently provides help, version, and bounded checksum-verified self-update.
 :::
 
 ## Target product
 
 OwlRora is designed as a complete multi-tenant LLM gateway for Anthropic Messages, OpenAI Chat Completions, OpenAI Responses, Google Gemini, and a dedicated Codex subscription Responses transport.
 
-OwlRora will own routing, usage accounting, observability, reliability policy, organization authorization, encrypted upstream credentials, scoped management API keys, and separate LLM-only gateway keys. Identity remains pluggable: OwlAuth can be integrated, a trusted external JWT can represent a local user, or a system administrator can provision users and organizations directly. A high-entropy environment management key authenticates the built-in API-key-only `seed_admin` user, which may operate directly or promote an existing local user. The target package also includes an official CLI and local stdio MCP mode that use the public management APIs.
+OwlRora will own routing, usage accounting, observability, reliability policy, organization authorization, encrypted upstream credentials, scoped management API keys, and separate LLM-only gateway keys. Identity remains pluggable: OwlAuth can be integrated, a trusted external JWT can represent a local user, or a system administrator can provision users and organizations directly. A high-entropy environment management key authenticates the built-in API-key-only `seed_admin` user, which may operate directly or promote an existing local user. The independently released CLI package will contain the official `owlrora` management client and local stdio MCP mode, both using only the public management APIs.
 
 [Read the product overview →](/overview)

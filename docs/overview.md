@@ -100,7 +100,7 @@ OwlRora distinguishes persisted bearer and recoverable-secret handling:
 - recoverable provider keys and OAuth tokens use versioned authenticated encryption;
 - the full-scope `seed_admin` management key remains solely in deployment environment configuration and never enters PostgreSQL or secret custody.
 
-The official binary reads one explicit 32-byte `OWLRORA_SECRET_ROOT` environment value and directly encrypts database secrets with HKDF-SHA-256 plus XChaCha20-Poly1305. There is no local key-provider object, key file, built-in KMS adapter, or fallback key. Users needing remote custody can implement the small provider-neutral SPI in an independent crate and statically link a custom server binary. Secrets are opened while building reusable upstream clients, never on each LLM request.
+The official server binary reads one explicit 32-byte `OWLRORA_SECRET_ROOT` environment value and directly encrypts database secrets with HKDF-SHA-256 plus XChaCha20-Poly1305. There is no local key-provider object, key file, built-in KMS adapter, or fallback key. Users needing remote custody can implement the small provider-neutral SPI in an independent crate and statically link a custom server binary. Secrets are opened while building reusable upstream clients, never on each LLM request.
 
 ## Data and horizontal scale
 
@@ -114,7 +114,7 @@ The architecture is designed for data growth beyond ten million logical requests
 
 ## Management and console
 
-The target package includes the management API, embedded React console, official CLI, and local stdio MCP mode. The CLI and MCP call only the public HTTP API; their full command/tool inventory does not bypass Management-key resource scope, key policy/administrator grants, or server authorization.
+The target consists of the `owlrora-server` management API and embedded React console plus the independently released `owlrora-cli` package containing the `owlrora` management client and local stdio MCP mode. The CLI and MCP call only the public HTTP API; their full command/tool inventory does not bypass Management-key resource scope, key policy/administrator grants, or server authorization.
 
 Management queries use `GET`. Commands use `POST`, with coarse tri-state updates:
 
@@ -130,11 +130,14 @@ The console uses a GitLab-like split between global administration and organizat
 
 The repository currently provides:
 
-- a Rust/Axum server and `GET /health`;
+- a Rust/Axum `owlrora-server` process and `GET /health`;
 - an embedded React frontend shell;
 - deterministic frontend packaging into the server crate;
+- an independent `owlrora-cli` crate whose `owlrora` binary provides help, version, and native `update`;
+- bounded stable `cli-v*` discovery, HTTPS archive/checksum download, strict one-file tar/zip validation, and locked cross-platform executable replacement;
+- isolated package builds for all published crates;
 - Docker packaging and smoke testing;
 - VitePress documentation;
-- CI and server release automation.
+- independent CLI crate/binary and server crate/container release automation.
 
 It does not yet provide identity persistence, gateway credentials, encrypted provider secrets, protocol adapters, routing, Redis allowance, usage aggregation, or management functionality. Target design under `spec/` does not make those capabilities available.

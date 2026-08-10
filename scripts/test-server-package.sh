@@ -64,7 +64,7 @@ CARGO_NET_OFFLINE=true cargo build \
   --package owlrora-server \
   --locked
 
-packaged_binary="$work_directory/target/debug/owlrora"
-test "$("$packaged_binary" --version)" = "owlrora ${server_version}"
+packaged_binary="$work_directory/target/debug/owlrora-server"
+test "$("$packaged_binary" --version)" = "owlrora-server ${server_version}"
 
 printf 'verified offline build and execution of packaged owlrora-server %s\n' "$server_version"

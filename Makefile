@@ -23,11 +23,12 @@ test: web-build ## Run all tests
 	@pnpm test
 
 .PHONY: build
-build: web-build ## Build the production server
-	@cargo build --release --locked --package owlrora-server
+build: web-build ## Build the production CLI and server
+	@cargo build --release --locked --package owlrora-cli --package owlrora-server
 
 .PHONY: package-check
 package-check: web-build ## Build and verify publishable crates and release preparation
+	@scripts/test-cli-package.sh
 	@scripts/test-server-package.sh
 	@python3 scripts/release/test-prepare-release.py
 
@@ -41,7 +42,7 @@ web-dev: ## Run the Vite development server
 
 .PHONY: dev
 dev: web-build ## Build the frontend and run the server
-	@cargo run --locked --package owlrora-server -- serve
+	@cargo run --locked --package owlrora-server
 
 .PHONY: docs
 docs: ## Run the documentation development server

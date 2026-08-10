@@ -48,12 +48,31 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Test Rust sources
         run: cargo test --workspace --all-features --locked
+      - name: Verify CLI crate package
+        run: scripts/test-cli-package.sh
       - name: Verify server crate packages
         run: scripts/test-server-package.sh
       - name: Test release preparation
         run: python3 scripts/release/test-prepare-release.py
-      - name: Build server
-        run: cargo build --release --locked --package owlrora-server
+      - name: Build CLI and server
+        run: cargo build --release --locked --package owlrora-cli --package owlrora-server
+
+  cli-windows:
+    name: CLI Windows
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Test Windows CLI
+        run: cargo test --locked --package owlrora-cli --all-features
 
   server-image:
     name: Server image

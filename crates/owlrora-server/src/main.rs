@@ -1,23 +1,33 @@
 #![forbid(unsafe_code)]
 
-use std::{env, error::Error, io, net::SocketAddr};
+use std::{env, error::Error, io, net::SocketAddr, process::ExitCode};
 
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Command {
-    Serve,
+    Run,
     Help,
     Version,
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+async fn main() -> ExitCode {
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("owlrora-server: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
     match parse_command(env::args().skip(1)).map_err(invalid_input)? {
-        Command::Serve => serve().await?,
+        Command::Run => serve().await?,
         Command::Help => print_help(),
-        Command::Version => println!("owlrora {}", env!("CARGO_PKG_VERSION")),
+        Command::Version => println!("owlrora-server {}", env!("CARGO_PKG_VERSION")),
     }
     Ok(())
 }
@@ -25,10 +35,10 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 fn parse_command(arguments: impl IntoIterator<Item = String>) -> Result<Command, String> {
     let mut arguments = arguments.into_iter();
     let command = match arguments.next().as_deref() {
-        None | Some("serve") => Command::Serve,
-        Some("-h" | "--help" | "help") => Command::Help,
-        Some("-V" | "--version" | "version") => Command::Version,
-        Some(value) => return Err(format!("unknown command: {value}")),
+        None => Command::Run,
+        Some("-h" | "--help") => Command::Help,
+        Some("-V" | "--version") => Command::Version,
+        Some(value) => return Err(format!("unexpected argument: {value}")),
     };
     if let Some(value) = arguments.next() {
         return Err(format!("unexpected argument: {value}"));
@@ -42,9 +52,9 @@ fn invalid_input(message: String) -> io::Error {
 
 fn print_help() {
     println!(
-        "OwlRora — Routing and Observability for Reliable AI\n\n\
-         Usage:\n  owlrora serve\n  owlrora --help\n  owlrora --version\n\n\
-         The management CLI and local stdio MCP command families are planned but not implemented."
+        "OwlRora Server — Routing and Observability for Reliable AI\n\n\
+         Usage: owlrora-server [OPTIONS]\n\n\
+         Options:\n  -h, --help       Print help\n  -V, --version    Print version"
     );
 }
 
@@ -77,9 +87,8 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_serve_and_accepts_explicit_serve() {
-        assert_eq!(parse(&[]), Ok(Command::Serve));
-        assert_eq!(parse(&["serve"]), Ok(Command::Serve));
+    fn starts_the_server_without_a_subcommand() {
+        assert_eq!(parse(&[]), Ok(Command::Run));
     }
 
     #[test]
@@ -89,13 +98,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_or_extra_arguments() {
+    fn rejects_subcommands_and_extra_arguments() {
         assert_eq!(
-            parse(&["unknown"]),
-            Err("unknown command: unknown".to_owned())
+            parse(&["serve"]),
+            Err("unexpected argument: serve".to_owned())
         );
         assert_eq!(
-            parse(&["serve", "extra"]),
+            parse(&["--help", "extra"]),
             Err("unexpected argument: extra".to_owned())
         );
     }
