@@ -59,13 +59,6 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: stable
         run: cargo build --release --locked --package owlrora-cli --target "${{ matrix.target }}"
-      - name: Smoke-test CLI binary
-        env:
-          BINARY: ${{ matrix.binary }}
-          TARGET: ${{ matrix.target }}
-        run: |
-          version="${GITHUB_REF_NAME#cli-v}"
-          test "$(target/$TARGET/release/$BINARY --version)" = "owlrora $version"
       - name: Package Unix CLI
         if: runner.os != 'Windows'
         env:

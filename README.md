@@ -66,7 +66,7 @@ The `seed_admin` user may administer the deployment directly or promote an exist
 
 ## Repository status and specifications
 
-The repository currently contains a Rust/Axum server foundation, an independently packaged `owlrora` CLI with native self-update, the provider-neutral key-custody SPI, an embedded React frontend, isolated crate packaging tests, container packaging, documentation, and separate CLI/server release automation. Product implementation has not started.
+The repository currently contains a Rust/Axum server foundation, an independently packaged `owlrora` CLI with native self-update, the provider-neutral key-custody SPI, an embedded React frontend, isolated crate packaging tests, container packaging, documentation, and separate CLI/server release automation for crates, GitHub Releases, and immutable versioned server images. Product implementation has not started.
 
 Target design lives under [`spec/`](spec/README.md). The thirteen specifications proceed from product and system boundaries through identity, authorization, upstream catalog, protocols, routing, budgets, observability, local-cache scale, management, operations, and implementation architecture. Public documentation lives under [`docs/`](docs/index.md) and distinguishes current behavior from product direction.
 

@@ -4,27 +4,77 @@ on:
   push:
     tags:
       - "server-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing server-v<semver> tag to publish or backfill
+        required: true
+        type: string
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
-  group: release-server-${{ github.ref }}
+  group: release-server-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   publish:
-    name: Publish crates and server image
+    name: Publish server release
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: write
     steps:
-      - name: Check out repository
+      - name: Resolve immutable release source
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REVISION: ${{ github.sha }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^server-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?$ ]]; then
+            echo "server release requires a server-v<semver> tag without build metadata" >&2
+            exit 1
+          fi
+
+          tag_ref="refs/tags/$RELEASE_TAG"
+          remote="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          refs="$(git ls-remote --exit-code "$remote" "$tag_ref" "$tag_ref^{}")"
+          tag_revision="$(awk -v ref="$tag_ref" '$2 == ref { print $1 }' <<< "$refs")"
+          source_revision="$(awk -v ref="$tag_ref^{}" '$2 == ref { print $1 }' <<< "$refs")"
+          test -n "$tag_revision"
+          if [[ -z "$source_revision" ]]; then
+            source_revision="$tag_revision"
+          fi
+          if [[ ! "$source_revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "could not resolve $RELEASE_TAG to one commit" >&2
+            exit 1
+          fi
+          if [[ "$EVENT_NAME" == "push" && "$source_revision" != "$EVENT_REVISION" ]]; then
+            echo "$RELEASE_TAG no longer resolves to the pushed commit" >&2
+            exit 1
+          fi
+
+          {
+            echo "version=${RELEASE_TAG#server-v}"
+            echo "source-revision=$source_revision"
+          } >> "$GITHUB_OUTPUT"
+      - name: Check out tagged source
         uses: actions/checkout@v7
         with:
+          ref: ${{ steps.release.outputs.source-revision }}
           persist-credentials: false
       - name: Prepare release manifests
-        run: python3 scripts/release/prepare_release.py
+        env:
+          SOURCE_REVISION: ${{ steps.release.outputs.source-revision }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_REVISION"
+          GITHUB_REF_TYPE=tag GITHUB_REF_NAME="$RELEASE_TAG" \
+            python3 scripts/release/prepare_release.py
       - name: Require crates.io token
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -32,13 +82,18 @@ jobs:
       - name: Publish server crates
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
-          version="${GITHUB_REF_NAME#server-v}"
-          scripts/release/publish-crate.sh \
-            crates/owlrora-key-provider/Cargo.toml "$version"
+          if [[ -f crates/owlrora-key-provider/Cargo.toml ]]; then
+            scripts/release/publish-crate.sh \
+              crates/owlrora-key-provider/Cargo.toml "$VERSION"
+          elif [[ "$VERSION" != "0.0.1" ]]; then
+            echo "server release source is missing owlrora-key-provider" >&2
+            exit 1
+          fi
           for attempt in {1..12}; do
             if scripts/release/publish-crate.sh \
-              crates/owlrora-server/Cargo.toml "$version"; then
+              crates/owlrora-server/Cargo.toml "$VERSION"; then
               break
             fi
             if [[ "$attempt" == 12 ]]; then
@@ -46,29 +101,15 @@ jobs:
             fi
             sleep 10
           done
-      - name: Build server image
-        run: |
-          version="${GITHUB_REF_NAME#server-v}"
-          image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          tag="${version//+/_}"
-          docker build \
-            --build-arg "OWLRORA_VERSION=$version" \
-            --build-arg "VCS_REF=$GITHUB_SHA" \
-            --tag "$image:$tag" \
-            .
-          scripts/docker/smoke-server-image.sh "$image:$tag"
-      - name: Log in to GitHub Container Registry
+      - name: Resolve versioned server image
+        id: image
         env:
           GHCR_TOKEN: ${{ github.token }}
-        run: echo "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-      - name: Publish immutable server image tag
-        env:
-          GHCR_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
-          version="${GITHUB_REF_NAME#server-v}"
           repository="${GITHUB_REPOSITORY,,}"
           image="ghcr.io/$repository"
-          tag="${version//+/_}"
+          tag="${VERSION//+/_}"
           registry_token="$(curl --fail --silent --show-error \
             --user "$GITHUB_ACTOR:$GHCR_TOKEN" \
             --get \
@@ -83,14 +124,65 @@ jobs:
             --output /dev/null --write-out '%{http_code}' \
             "https://ghcr.io/v2/$repository/manifests/$tag")"
           case "$status" in
-            200)
-              echo "$image:$tag already exists; preserving its original digest"
-              ;;
-            404)
-              docker push "$image:$tag"
-              ;;
+            200) exists=true ;;
+            404) exists=false ;;
             *)
               echo "GHCR returned HTTP $status while checking $image:$tag" >&2
               exit 1
               ;;
           esac
+          {
+            echo "image=$image"
+            echo "tag=$tag"
+            echo "exists=$exists"
+          } >> "$GITHUB_OUTPUT"
+      - name: Build versioned server image
+        if: steps.image.outputs.exists != 'true'
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          TAG: ${{ steps.image.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+          SOURCE_REVISION: ${{ steps.release.outputs.source-revision }}
+        run: |
+          docker build --pull \
+            --build-arg "OWLRORA_VERSION=$VERSION" \
+            --build-arg "VCS_REF=$SOURCE_REVISION" \
+            --build-arg "SOURCE_URL=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --tag "$IMAGE:$TAG" \
+            .
+      - name: Log in to GitHub Container Registry
+        if: steps.image.outputs.exists != 'true'
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: echo "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Publish versioned server image
+        if: steps.image.outputs.exists != 'true'
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          TAG: ${{ steps.image.outputs.tag }}
+        run: docker push "$IMAGE:$TAG"
+      - name: Preserve existing server image
+        if: steps.image.outputs.exists == 'true'
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          TAG: ${{ steps.image.outputs.tag }}
+        run: echo "$IMAGE:$TAG already exists; preserving its original digest"
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "$RELEASE_TAG already has a GitHub Release; preserving it"
+            exit 0
+          fi
+          release_args=(
+            --generate-notes
+            --title "OwlRora Server v${VERSION}"
+            --verify-tag
+          )
+          if [[ "$VERSION" == *-* ]]; then
+            release_args+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" "${release_args[@]}"

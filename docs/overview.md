@@ -138,6 +138,6 @@ The repository currently provides:
 - isolated package builds for all published crates;
 - Docker packaging and smoke testing;
 - VitePress documentation;
-- independent CLI crate/binary and server crate/container release automation.
+- independent CLI crate/binary releases plus server crate, GitHub Release, and immutable versioned-container publication.
 
 It does not yet provide identity persistence, gateway credentials, encrypted provider secrets, protocol adapters, routing, Redis allowance, usage aggregation, or management functionality. Target design under `spec/` does not make those capabilities available.
