@@ -765,11 +765,14 @@ fn acquire_install_lock(install_dir: &Path) -> Result<InstallLock, UpdateError> 
         .map_err(|error| UpdateError::Install(format!("{}: {error}", path.display())))?;
     match file.try_lock_exclusive() {
         Ok(()) => Ok(InstallLock { _file: file }),
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-            Err(UpdateError::InstallLocked(path))
-        }
+        Err(error) if is_lock_contended(&error) => Err(UpdateError::InstallLocked(path)),
         Err(error) => Err(UpdateError::Install(format!("{}: {error}", path.display()))),
     }
+}
+
+fn is_lock_contended(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::WouldBlock
+        || error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
 }
 
 fn destination_is_current_executable(destination: &Path) -> bool {
@@ -1237,12 +1240,27 @@ mod tests {
 
     #[test]
     fn concurrent_install_lock_is_rejected() {
+        const CHILD_ENV: &str = "OWLRORA_LOCK_TEST_DIRECTORY";
+        if let Some(directory) = env::var_os(CHILD_ENV) {
+            assert!(matches!(
+                acquire_install_lock(Path::new(&directory)),
+                Err(UpdateError::InstallLocked(_))
+            ));
+            return;
+        }
+
         let directory = tempfile::tempdir().unwrap();
         let _lock = acquire_install_lock(directory.path()).unwrap();
-        assert!(matches!(
-            acquire_install_lock(directory.path()),
-            Err(UpdateError::InstallLocked(_))
-        ));
+        let status = std::process::Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "update::tests::concurrent_install_lock_is_rejected",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, directory.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
     }
 
     #[test]
