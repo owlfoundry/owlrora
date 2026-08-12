@@ -1,0 +1,6 @@
+DROP TRIGGER issuer_verifier_material_versions_immutable
+ON issuer_verifier_material_versions;
+
+CREATE TRIGGER issuer_verifier_material_versions_immutable
+BEFORE UPDATE OR DELETE ON issuer_verifier_material_versions
+FOR EACH ROW EXECUTE FUNCTION reject_issuer_verifier_material_update();

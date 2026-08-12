@@ -1,7 +1,9 @@
 # OwlRora Server
 
-`owlrora-server` is the server library and source package for OwlRora — Routing and Observability for Reliable AI. It installs the `owlrora-server` executable and includes the production frontend assets required by the runnable server foundation.
+`owlrora-server` is the server library and executable for OwlRora — Routing and Observability for Reliable AI. It packages the production React console and currently ships OwlRora's identity and management plane.
 
-OwlRora is planned as a self-hosted, multi-tenant LLM gateway for protocol-native model routing, usage observability, reliability policy, and complete system/organization administration.
+Implemented capabilities include PostgreSQL-backed users, organizations, memberships, administrator grants, invitations, scoped Management API keys and key-derived sessions, external identity/JWT/OIDC administration, audit and idempotency evidence, secret-root encryption, and coherent runtime publication. The embedded console exposes deployment and organization workspaces over the same public Management API used by the independent `owlrora-cli` package.
 
-This crate currently provides only the runnable server and embedded-frontend foundation. The gateway protocols, management surface, and custom custody provider registration/composition builder are not implemented yet. The independent `owlrora-cli` package installs the remote `owlrora` client; it does not depend on this crate or receive an in-process server path.
+The LLM gateway data plane is not implemented yet: protocol ingress, provider credentials and catalog execution, gateway keys, routing/failover, Redis allowance coordination, and usage aggregation remain planned. Custom key-provider registration and the higher-level custom server composition builder also remain future work; the official binary directly provides its bundled environment-root encryption path.
+
+The executable requires PostgreSQL plus explicit `OWLRORA_DATABASE_URL`, `OWLRORA_PUBLIC_ORIGIN`, `OWLRORA_SEED_ADMIN_API_KEY`, and `OWLRORA_SECRET_ROOT` configuration. It provides `GET /health` for public liveness and exposes protected operational readiness/publication evidence through the Management API.

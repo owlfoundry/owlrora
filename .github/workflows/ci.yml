@@ -16,7 +16,23 @@ jobs:
   quality:
     name: Source and build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    env:
+      OWLRORA_TEST_DATABASE_URL: postgresql://owlrora:owlrora_ci@127.0.0.1:5432/owlrora_test
+    services:
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_DB: owlrora_test
+          POSTGRES_USER: owlrora
+          POSTGRES_PASSWORD: owlrora_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready --username=owlrora --dbname=owlrora_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -42,6 +58,8 @@ jobs:
           test -z "$(git ls-files --others --exclude-standard -- crates/owlrora-server/web/dist)"
       - name: Set up Rust
         run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
+      - name: Verify generated management contracts
+        run: scripts/generate-management-client-contract.sh --check
       - name: Check Rust formatting
         run: cargo fmt --all --check
       - name: Lint Rust sources

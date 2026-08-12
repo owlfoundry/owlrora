@@ -4,8 +4,8 @@ OwlRora stands for **Routing and Observability for Reliable AI**.
 
 **Route Once. Reach All.**
 
-::: warning Product direction
-OwlRora is not yet an operational LLM gateway. This page describes the target architecture; the current implementation status is listed below.
+::: warning Delivery boundary
+OwlRora now provides its identity and management plane, but it is not yet an operational LLM gateway. Data-plane sections describe the target architecture; the shipped management capabilities are listed below.
 :::
 
 ## What OwlRora is
@@ -114,7 +114,7 @@ The architecture is designed for data growth beyond ten million logical requests
 
 ## Management and console
 
-The target consists of the `owlrora-server` management API and embedded React console plus the independently released `owlrora-cli` package containing the `owlrora` management client and local stdio MCP mode. The CLI and MCP call only the public HTTP API; their full command/tool inventory does not bypass Management-key resource scope, key policy/administrator grants, or server authorization.
+The shipped management plane consists of the `owlrora-server` Management API and embedded React console plus the independently released `owlrora-cli` package containing the `owlrora` management client and local stdio MCP mode. The CLI and MCP call only the public HTTP API; their full command/tool inventory does not bypass Management-key resource scope, key policy/administrator grants, or server authorization.
 
 Management queries use `GET`. Commands use `POST`, with coarse tri-state updates:
 
@@ -130,14 +130,11 @@ The console uses a GitLab-like split between global administration and organizat
 
 The repository currently provides:
 
-- a Rust/Axum `owlrora-server` process and `GET /health`;
-- an embedded React frontend shell;
-- deterministic frontend packaging into the server crate;
-- an independent `owlrora-cli` crate whose `owlrora` binary provides help, version, and native `update`;
-- bounded stable `cli-v*` discovery, HTTPS archive/checksum download, strict one-file tar/zip validation, and locked cross-platform executable replacement;
-- isolated package builds for all published crates;
-- Docker packaging and smoke testing;
-- VitePress documentation;
-- independent CLI crate/binary releases plus server crate, GitHub Release, and immutable versioned-container publication.
+- a Rust/Axum server with PostgreSQL migrations for users, organizations, memberships, administrator grants, invitations, scoped Management API keys, key-derived sessions, external identity bindings, issuer verifier material, idempotency, audit, and runtime publication evidence;
+- one typed authorization pipeline for seed administration, durable deployment/organization key principals, browser sessions, external sessions, and direct JWT callers;
+- bundled secret-root encryption and non-recoverable management-key digests;
+- an embedded React console with deployment and organization workspaces, route/action guards, ETag-aware commands, and one-time-secret handling;
+- generated typed `owlrora` management commands and 67 bounded stdio MCP tools over the public HTTP API, plus hardened profiles, structured output, and native self-update;
+- deterministic contract/frontend generation, real-PostgreSQL tests, isolated package builds, container smoke tests, documentation, and immutable CLI/server release automation.
 
-It does not yet provide identity persistence, gateway credentials, encrypted provider secrets, protocol adapters, routing, Redis allowance, usage aggregation, or management functionality. Target design under `spec/` does not make those capabilities available.
+It does not yet provide LLM gateway keys and traffic ingress, provider credentials/catalog execution, protocol adapters, routing/failover, Redis allowance coordination, or usage aggregation. Those data-plane capabilities remain target design under `spec/`.

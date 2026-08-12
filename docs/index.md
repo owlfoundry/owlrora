@@ -17,18 +17,18 @@ hero:
       link: https://github.com/owlfoundry/owlrora
 
 features:
-  - title: Planned — Routing
-    details: Product direction for a provider-neutral gateway boundary across models, providers, and compatible AI APIs.
-  - title: Planned — Observability
-    details: Product direction for structured usage, token, cost, latency, outcome, and routing evidence.
-  - title: Planned — Reliable
-    details: Product direction for retries, fallbacks, circuit breaking, and rate limits at the gateway boundary.
-  - title: Planned — AI
-    details: Product direction for protocol-native Anthropic, OpenAI, Gemini, and Codex Responses traffic.
+  - title: Available — Management plane
+    details: PostgreSQL-backed identity, tenancy, scoped management keys and sessions, external issuers, and an embedded console.
+  - title: Available — Automation
+    details: Generated typed CLI commands and a bounded stdio MCP adapter over the public management API.
+  - title: Planned — Gateway data plane
+    details: Product direction for protocol-native routing, reliability, budgets, usage, and observability.
+  - title: Available — Secure foundations
+    details: Explicit secret-root encryption, non-recoverable key digests, typed authorization, ETags, audit evidence, and immutable runtime publication.
 ---
 
 ::: warning Current status
-OwlRora is currently at the runnable-foundation and product-design stage. The LLM gateway and management capabilities described here are product direction, not shipped behavior. The current `owlrora-server` embeds the frontend shell and exposes `GET /health`; the separate `owlrora` CLI currently provides help, version, and bounded checksum-verified self-update.
+OwlRora currently ships its identity and management plane, embedded console, generated CLI/MCP clients, and secure PostgreSQL-backed runtime publication. The LLM ingress, upstream routing, Redis allowance coordination, and usage/observability data plane described here remain product direction.
 :::
 
 ## Target product

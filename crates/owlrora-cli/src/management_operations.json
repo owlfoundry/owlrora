@@ -1,0 +1,2981 @@
+[
+  {
+    "id": "session.get",
+    "resource_family": "session",
+    "method": "GET",
+    "path": "/api/v1/session",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "personal",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [],
+    "request_schema": null,
+    "response_schema": "session.get.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "session get",
+    "mcp_tool": "session_get",
+    "mcp_toolset": "read",
+    "console_capability_key": "session.get"
+  },
+  {
+    "id": "me.get",
+    "resource_family": "me",
+    "method": "GET",
+    "path": "/api/v1/me",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "personal",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [],
+    "request_schema": null,
+    "response_schema": "me.get.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "me get",
+    "mcp_tool": "me_get",
+    "mcp_toolset": "read",
+    "console_capability_key": "me.get"
+  },
+  {
+    "id": "me.organizations.list",
+    "resource_family": "me",
+    "method": "GET",
+    "path": "/api/v1/me/organizations",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "personal",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [],
+    "request_schema": null,
+    "response_schema": "me.organizations.list.response",
+    "paginated": true,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "me organizations list",
+    "mcp_tool": "me_organizations_list",
+    "mcp_toolset": "read",
+    "console_capability_key": "me.organizations.list"
+  },
+  {
+    "id": "system.users.list",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/users",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "system",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_users",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.users.list.response",
+    "paginated": true,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system users list",
+    "mcp_tool": "system_users_list",
+    "mcp_toolset": "read",
+    "console_capability_key": "system.users.list"
+  },
+  {
+    "id": "system.users.create",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/users/actions/create",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "system",
+    "required_scopes": [
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_users",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "display_name": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "human",
+            "synthetic"
+          ],
+          "type": "string"
+        },
+        "primary_email": {
+          "maxLength": 4096,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "display_name"
+      ],
+      "type": "object"
+    },
+    "response_schema": "system.users.create.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "supported",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system users create",
+    "mcp_tool": "system_users_create",
+    "mcp_toolset": "write",
+    "console_capability_key": "system.users.create"
+  },
+  {
+    "id": "system.users.get",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/users/{user_id}",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "system",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_users",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.users.get.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system users get",
+    "mcp_tool": "system_users_get",
+    "mcp_toolset": "read",
+    "console_capability_key": "system.users.get"
+  },
+  {
+    "id": "system.users.update",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/users/{user_id}/actions/update",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "system",
+    "required_scopes": [
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_users",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "display_name": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "primary_email": {
+          "maxLength": 4096,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "active",
+            "disabled"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "response_schema": "system.users.update.response",
+    "paginated": false,
+    "etag_precondition": true,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system users update",
+    "mcp_tool": "system_users_update",
+    "mcp_toolset": "write",
+    "console_capability_key": "system.users.update"
+  },
+  {
+    "id": "system.organizations.list",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/organizations",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "system",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_organizations",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.organizations.list.response",
+    "paginated": true,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system organizations list",
+    "mcp_tool": "system_organizations_list",
+    "mcp_toolset": "read",
+    "console_capability_key": "system.organizations.list"
+  },
+  {
+    "id": "system.organizations.create",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/organizations/actions/create",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "system",
+    "required_scopes": [
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_organizations",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "initial_owner_user_id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "ordinary",
+            "synthetic"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "slug": {
+          "maxLength": 4096,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "initial_owner_user_id"
+      ],
+      "type": "object"
+    },
+    "response_schema": "system.organizations.create.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "supported",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system organizations create",
+    "mcp_tool": "system_organizations_create",
+    "mcp_toolset": "write",
+    "console_capability_key": "system.organizations.create"
+  },
+  {
+    "id": "system.organizations.get",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/organizations/{organization_id}",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "system",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_organizations",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.organizations.get.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system organizations get",
+    "mcp_tool": "system_organizations_get",
+    "mcp_toolset": "read",
+    "console_capability_key": "system.organizations.get"
+  },
+  {
+    "id": "system.organizations.update",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/organizations/{organization_id}/actions/update",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "system",
+    "required_scopes": [
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_organizations",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "name": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "slug": {
+          "maxLength": 4096,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "active",
+            "suspended"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "response_schema": "system.organizations.update.response",
+    "paginated": false,
+    "etag_precondition": true,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system organizations update",
+    "mcp_tool": "system_organizations_update",
+    "mcp_toolset": "write",
+    "console_capability_key": "system.organizations.update"
+  },
+  {
+    "id": "organization.get",
+    "resource_family": "organization",
+    "method": "GET",
+    "path": "/api/v1/organizations/{organization_id}",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "organization",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "read_organization",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "organization.get.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "organization get",
+    "mcp_tool": "organization_get",
+    "mcp_toolset": "read",
+    "console_capability_key": "organization.get"
+  },
+  {
+    "id": "organization.update",
+    "resource_family": "organization",
+    "method": "POST",
+    "path": "/api/v1/organizations/{organization_id}/actions/update",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "organization",
+    "required_scopes": [
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "update_organization",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "name": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "slug": {
+          "maxLength": 4096,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "active",
+            "suspended"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "response_schema": "organization.update.response",
+    "paginated": false,
+    "etag_precondition": true,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "organization update",
+    "mcp_tool": "organization_update",
+    "mcp_toolset": "write",
+    "console_capability_key": "organization.update"
+  },
+  {
+    "id": "organization.memberships.list",
+    "resource_family": "organization",
+    "method": "GET",
+    "path": "/api/v1/organizations/{organization_id}/memberships",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "organization",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "read_members",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "organization.memberships.list.response",
+    "paginated": true,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "organization memberships list",
+    "mcp_tool": "organization_memberships_list",
+    "mcp_toolset": "read",
+    "console_capability_key": "organization.memberships.list"
+  },
+  {
+    "id": "organization.memberships.create",
+    "resource_family": "organization",
+    "method": "POST",
+    "path": "/api/v1/organizations/{organization_id}/memberships/actions/create",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "organization",
+    "required_scopes": [
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_members",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "llm_scope_ceiling": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "role": {
+          "enum": [
+            "owner",
+            "admin",
+            "member"
+          ],
+          "type": "string"
+        },
+        "user_id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "user_id",
+        "role"
+      ],
+      "type": "object"
+    },
+    "response_schema": "organization.memberships.create.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "supported",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "organization memberships create",
+    "mcp_tool": "organization_memberships_create",
+    "mcp_toolset": "write",
+    "console_capability_key": "organization.memberships.create"
+  },
+  {
+    "id": "organization.memberships.get",
+    "resource_family": "organization",
+    "method": "GET",
+    "path": "/api/v1/organizations/{organization_id}/memberships/{user_id}",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "organization",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "read_members",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "organization.memberships.get.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "organization memberships get",
+    "mcp_tool": "organization_memberships_get",
+    "mcp_toolset": "read",
+    "console_capability_key": "organization.memberships.get"
+  },
+  {
+    "id": "organization.memberships.update",
+    "resource_family": "organization",
+    "method": "POST",
+    "path": "/api/v1/organizations/{organization_id}/memberships/{user_id}/actions/update",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "organization",
+    "required_scopes": [
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_members",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "llm_scope_ceiling": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "role": {
+          "enum": [
+            "owner",
+            "admin",
+            "member"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "response_schema": "organization.memberships.update.response",
+    "paginated": false,
+    "etag_precondition": true,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "organization memberships update",
+    "mcp_tool": "organization_memberships_update",
+    "mcp_toolset": "write",
+    "console_capability_key": "organization.memberships.update"
+  },
+  {
+    "id": "organization.memberships.remove",
+    "resource_family": "organization",
+    "method": "POST",
+    "path": "/api/v1/organizations/{organization_id}/memberships/{user_id}/actions/remove",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "organization",
+    "required_scopes": [
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_members",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "organization.memberships.remove.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": true,
+    "destructive": true,
+    "approval_recommended": true,
+    "cli_path": "organization memberships remove",
+    "mcp_tool": "organization_memberships_remove",
+    "mcp_toolset": "write",
+    "console_capability_key": "organization.memberships.remove"
+  },
+  {
+    "id": "system.management_keys.list",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/management-api-keys",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "system",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "read_management_keys",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.management_keys.list.response",
+    "paginated": true,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system management-api-keys list",
+    "mcp_tool": "system_management_keys_list",
+    "mcp_toolset": "read",
+    "console_capability_key": "system.management_keys.list"
+  },
+  {
+    "id": "system.management_keys.create",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/management-api-keys/actions/create",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "system",
+    "required_scopes": [
+      "management:authority",
+      "management:secrets",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_keys",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "capability_ceiling": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "expires_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "scopes": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "name",
+        "scopes",
+        "capability_ceiling"
+      ],
+      "type": "object"
+    },
+    "response_schema": "system.management_keys.create.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "rejected",
+    "secret_input": false,
+    "one_time_secret_response": true,
+    "sensitive_result": true,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "system management-api-keys create",
+    "mcp_tool": "system_management_keys_create",
+    "mcp_toolset": "authority",
+    "console_capability_key": "system.management_keys.create"
+  },
+  {
+    "id": "system.management_keys.get",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/management-api-keys/{management_api_key_id}",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "system",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "read_management_keys",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.management_keys.get.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system management-api-keys get",
+    "mcp_tool": "system_management_keys_get",
+    "mcp_toolset": "read",
+    "console_capability_key": "system.management_keys.get"
+  },
+  {
+    "id": "system.management_keys.update",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/management-api-keys/{management_api_key_id}/actions/update",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "system",
+    "required_scopes": [
+      "management:authority",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_keys",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "capability_ceiling": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "expires_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "scopes": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "status": {
+          "enum": [
+            "active",
+            "disabled",
+            "revoked"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "response_schema": "system.management_keys.update.response",
+    "paginated": false,
+    "etag_precondition": true,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system management-api-keys update",
+    "mcp_tool": "system_management_keys_update",
+    "mcp_toolset": "authority",
+    "console_capability_key": "system.management_keys.update"
+  },
+  {
+    "id": "system.management_keys.rotate",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/management-api-keys/{management_api_key_id}/actions/rotate",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "system",
+    "required_scopes": [
+      "management:secrets",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_keys",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "overlap_seconds": {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "response_schema": "system.management_keys.rotate.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "rejected",
+    "secret_input": false,
+    "one_time_secret_response": true,
+    "sensitive_result": true,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "system management-api-keys rotate",
+    "mcp_tool": "system_management_keys_rotate",
+    "mcp_toolset": "secrets",
+    "console_capability_key": "system.management_keys.rotate"
+  },
+  {
+    "id": "system.management_key_policy.get",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/management-api-key-policy",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "system",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_keys",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.management_key_policy.get.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": true,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "system management-api-key-policy get",
+    "mcp_tool": "system_management_key_policy_get",
+    "mcp_toolset": "read",
+    "console_capability_key": "system.management_key_policy.get"
+  },
+  {
+    "id": "system.management_key_policy.update",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/management-api-key-policy/actions/update",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "system",
+    "required_scopes": [
+      "management:authority",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_keys",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "policy": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "policy"
+      ],
+      "type": "object"
+    },
+    "response_schema": "system.management_key_policy.update.response",
+    "paginated": false,
+    "etag_precondition": true,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": true,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "system management-api-key-policy update",
+    "mcp_tool": "system_management_key_policy_update",
+    "mcp_toolset": "authority",
+    "console_capability_key": "system.management_key_policy.update"
+  },
+  {
+    "id": "organization.management_keys.list",
+    "resource_family": "organization",
+    "method": "GET",
+    "path": "/api/v1/organizations/{organization_id}/management-api-keys",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "organization",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "read_management_keys",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "organization.management_keys.list.response",
+    "paginated": true,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "organization management-api-keys list",
+    "mcp_tool": "organization_management_keys_list",
+    "mcp_toolset": "read",
+    "console_capability_key": "organization.management_keys.list"
+  },
+  {
+    "id": "organization.management_keys.create",
+    "resource_family": "organization",
+    "method": "POST",
+    "path": "/api/v1/organizations/{organization_id}/management-api-keys/actions/create",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "organization",
+    "required_scopes": [
+      "management:authority",
+      "management:secrets",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "create_management_keys",
+        "condition": null
+      },
+      {
+        "required_capability": "read_organization",
+        "condition": "local_member_self_service_policy"
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "capability_ceiling": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "expires_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "scopes": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "name",
+        "scopes",
+        "capability_ceiling"
+      ],
+      "type": "object"
+    },
+    "response_schema": "organization.management_keys.create.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "rejected",
+    "secret_input": false,
+    "one_time_secret_response": true,
+    "sensitive_result": true,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "organization management-api-keys create",
+    "mcp_tool": "organization_management_keys_create",
+    "mcp_toolset": "authority",
+    "console_capability_key": "organization.management_keys.create"
+  },
+  {
+    "id": "organization.management_keys.get",
+    "resource_family": "organization",
+    "method": "GET",
+    "path": "/api/v1/organizations/{organization_id}/management-api-keys/{management_api_key_id}",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "organization",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "read_management_keys",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "organization.management_keys.get.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "organization management-api-keys get",
+    "mcp_tool": "organization_management_keys_get",
+    "mcp_toolset": "read",
+    "console_capability_key": "organization.management_keys.get"
+  },
+  {
+    "id": "organization.management_keys.update",
+    "resource_family": "organization",
+    "method": "POST",
+    "path": "/api/v1/organizations/{organization_id}/management-api-keys/{management_api_key_id}/actions/update",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "organization",
+    "required_scopes": [
+      "management:authority",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_management_keys",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "capability_ceiling": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "expires_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "scopes": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "status": {
+          "enum": [
+            "active",
+            "disabled",
+            "revoked"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "response_schema": "organization.management_keys.update.response",
+    "paginated": false,
+    "etag_precondition": true,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "organization management-api-keys update",
+    "mcp_tool": "organization_management_keys_update",
+    "mcp_toolset": "authority",
+    "console_capability_key": "organization.management_keys.update"
+  },
+  {
+    "id": "organization.management_keys.rotate",
+    "resource_family": "organization",
+    "method": "POST",
+    "path": "/api/v1/organizations/{organization_id}/management-api-keys/{management_api_key_id}/actions/rotate",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "organization",
+    "required_scopes": [
+      "management:secrets",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_management_keys",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "overlap_seconds": {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "response_schema": "organization.management_keys.rotate.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "rejected",
+    "secret_input": false,
+    "one_time_secret_response": true,
+    "sensitive_result": true,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "organization management-api-keys rotate",
+    "mcp_tool": "organization_management_keys_rotate",
+    "mcp_toolset": "secrets",
+    "console_capability_key": "organization.management_keys.rotate"
+  },
+  {
+    "id": "organization.api_key_policy.get",
+    "resource_family": "organization",
+    "method": "GET",
+    "path": "/api/v1/organizations/{organization_id}/api-key-policy",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "organization",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "read_management_keys",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "organization.api_key_policy.get.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": true,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "organization api-key-policy get",
+    "mcp_tool": "organization_api_key_policy_get",
+    "mcp_toolset": "read",
+    "console_capability_key": "organization.api_key_policy.get"
+  },
+  {
+    "id": "organization.api_key_policy.update",
+    "resource_family": "organization",
+    "method": "POST",
+    "path": "/api/v1/organizations/{organization_id}/api-key-policy/actions/update",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "organization",
+    "required_scopes": [
+      "management:authority",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "update_api_key_policy",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "policy": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "policy"
+      ],
+      "type": "object"
+    },
+    "response_schema": "organization.api_key_policy.update.response",
+    "paginated": false,
+    "etag_precondition": true,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": true,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "organization api-key-policy update",
+    "mcp_tool": "organization_api_key_policy_update",
+    "mcp_toolset": "authority",
+    "console_capability_key": "organization.api_key_policy.update"
+  },
+  {
+    "id": "organization.invitations.list",
+    "resource_family": "organization",
+    "method": "GET",
+    "path": "/api/v1/organizations/{organization_id}/invitations",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "organization",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "read_members",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "organization.invitations.list.response",
+    "paginated": true,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "organization invitations list",
+    "mcp_tool": "organization_invitations_list",
+    "mcp_toolset": "read",
+    "console_capability_key": "organization.invitations.list"
+  },
+  {
+    "id": "organization.invitations.get",
+    "resource_family": "organization",
+    "method": "GET",
+    "path": "/api/v1/organizations/{organization_id}/invitations/{invitation_id}",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "organization",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "read_members",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "organization.invitations.get.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "organization invitations get",
+    "mcp_tool": "organization_invitations_get",
+    "mcp_toolset": "read",
+    "console_capability_key": "organization.invitations.get"
+  },
+  {
+    "id": "organization.invitations.create",
+    "resource_family": "organization",
+    "method": "POST",
+    "path": "/api/v1/organizations/{organization_id}/invitations/actions/create",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "organization",
+    "required_scopes": [
+      "management:secrets",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_members",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "expires_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "intended_email": {
+          "maxLength": 4096,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "intended_role": {
+          "enum": [
+            "owner",
+            "admin",
+            "member"
+          ],
+          "type": "string"
+        },
+        "llm_scope_ceiling": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "intended_role",
+        "expires_at"
+      ],
+      "type": "object"
+    },
+    "response_schema": "organization.invitations.create.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "rejected",
+    "secret_input": false,
+    "one_time_secret_response": true,
+    "sensitive_result": true,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "organization invitations create",
+    "mcp_tool": "organization_invitations_create",
+    "mcp_toolset": "secrets",
+    "console_capability_key": "organization.invitations.create"
+  },
+  {
+    "id": "organization.invitations.resend",
+    "resource_family": "organization",
+    "method": "POST",
+    "path": "/api/v1/organizations/{organization_id}/invitations/{invitation_id}/actions/resend",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "organization",
+    "required_scopes": [
+      "management:secrets",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_members",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "organization.invitations.resend.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "rejected",
+    "secret_input": false,
+    "one_time_secret_response": true,
+    "sensitive_result": true,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "organization invitations resend",
+    "mcp_tool": "organization_invitations_resend",
+    "mcp_toolset": "secrets",
+    "console_capability_key": "organization.invitations.resend"
+  },
+  {
+    "id": "organization.invitations.revoke",
+    "resource_family": "organization",
+    "method": "POST",
+    "path": "/api/v1/organizations/{organization_id}/invitations/{invitation_id}/actions/revoke",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "organization",
+    "required_scopes": [
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_members",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "organization.invitations.revoke.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": true,
+    "destructive": true,
+    "approval_recommended": true,
+    "cli_path": "organization invitations revoke",
+    "mcp_tool": "organization_invitations_revoke",
+    "mcp_toolset": "write",
+    "console_capability_key": "organization.invitations.revoke"
+  },
+  {
+    "id": "system.administrators.list",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/administrators",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "system",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_administrators",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.administrators.list.response",
+    "paginated": true,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": true,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "system administrators list",
+    "mcp_tool": "system_administrators_list",
+    "mcp_toolset": "read",
+    "console_capability_key": "system.administrators.list"
+  },
+  {
+    "id": "system.administrators.grant",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/administrators/actions/grant",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "system",
+    "required_scopes": [
+      "management:authority",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_administrators",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "subject_id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "subject_kind": {
+          "enum": [
+            "local_user",
+            "deployment_management_api_key"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "subject_kind",
+        "subject_id"
+      ],
+      "type": "object"
+    },
+    "response_schema": "system.administrators.grant.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": true,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "system administrators grant",
+    "mcp_tool": "system_administrators_grant",
+    "mcp_toolset": "authority",
+    "console_capability_key": "system.administrators.grant"
+  },
+  {
+    "id": "system.administrators.revoke",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/administrators/{subject_kind}/{subject_id}/actions/revoke",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "system",
+    "required_scopes": [
+      "management:authority",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_administrators",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.administrators.revoke.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": true,
+    "destructive": true,
+    "approval_recommended": true,
+    "cli_path": "system administrators revoke",
+    "mcp_tool": "system_administrators_revoke",
+    "mcp_toolset": "authority",
+    "console_capability_key": "system.administrators.revoke"
+  },
+  {
+    "id": "system.identity_issuers.list",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/identity-issuers",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "system",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.identity_issuers.list.response",
+    "paginated": true,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": true,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "system identity-issuers list",
+    "mcp_tool": "system_identity_issuers_list",
+    "mcp_toolset": "read",
+    "console_capability_key": "system.identity_issuers.list"
+  },
+  {
+    "id": "system.identity_issuers.create",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/identity-issuers/actions/create",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "system",
+    "required_scopes": [
+      "management:authority",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted_audiences": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "allowed_algorithms": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "browser_login": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "capability_claim_policy": {},
+        "claim_mapping": {
+          "type": "object"
+        },
+        "clock_skew_seconds": {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "display_name": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "issuer": {
+          "format": "uri",
+          "maxLength": 4096,
+          "type": "string"
+        },
+        "jwks_source": {
+          "type": "object"
+        },
+        "jwt_capability_ceiling": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "jwt_route_ceiling": {
+          "type": "object"
+        },
+        "key_cache_policy": {
+          "type": "object"
+        },
+        "management_organization_ceiling": {
+          "type": "object"
+        },
+        "management_scope_ceiling": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "name": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "organization_selector": {
+          "type": "object"
+        },
+        "provisioning_policy_id": {
+          "maxLength": 4096,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "active",
+            "disabled"
+          ],
+          "type": "string"
+        },
+        "subject_claim": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "display_name",
+        "issuer",
+        "status",
+        "jwks_source",
+        "allowed_algorithms",
+        "accepted_audiences",
+        "management_organization_ceiling",
+        "capability_claim_policy",
+        "jwt_route_ceiling",
+        "organization_selector",
+        "provisioning_policy_id",
+        "browser_login"
+      ],
+      "type": "object"
+    },
+    "response_schema": "system.identity_issuers.create.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "supported",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": true,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "system identity-issuers create",
+    "mcp_tool": "system_identity_issuers_create",
+    "mcp_toolset": "authority",
+    "console_capability_key": "system.identity_issuers.create"
+  },
+  {
+    "id": "system.identity_issuers.get",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/identity-issuers/{issuer_id}",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "system",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.identity_issuers.get.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": true,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "system identity-issuers get",
+    "mcp_tool": "system_identity_issuers_get",
+    "mcp_toolset": "read",
+    "console_capability_key": "system.identity_issuers.get"
+  },
+  {
+    "id": "system.identity_issuers.update",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/identity-issuers/{issuer_id}/actions/update",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "system",
+    "required_scopes": [
+      "management:authority",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "accepted_audiences": {},
+        "allowed_algorithms": {},
+        "browser_login": {},
+        "capability_claim_policy": {},
+        "claim_mapping": {},
+        "clock_skew_seconds": {},
+        "display_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "jwks_source": {},
+        "jwt_capability_ceiling": {},
+        "jwt_route_ceiling": {},
+        "key_cache_policy": {},
+        "management_organization_ceiling": {},
+        "management_scope_ceiling": {},
+        "organization_selector": {},
+        "provisioning_policy_id": {},
+        "status": {},
+        "subject_claim": {}
+      },
+      "required": [],
+      "type": "object"
+    },
+    "response_schema": "system.identity_issuers.update.response",
+    "paginated": false,
+    "etag_precondition": true,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": true,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "system identity-issuers update",
+    "mcp_tool": "system_identity_issuers_update",
+    "mcp_toolset": "authority",
+    "console_capability_key": "system.identity_issuers.update"
+  },
+  {
+    "id": "system.identity_issuers.refresh",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/identity-issuers/{issuer_id}/actions/refresh-verifier-material",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "system",
+    "required_scopes": [
+      "management:authority",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.identity_issuers.refresh.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": true,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "system identity-issuers refresh",
+    "mcp_tool": "system_identity_issuers_refresh",
+    "mcp_toolset": "authority",
+    "console_capability_key": "system.identity_issuers.refresh"
+  },
+  {
+    "id": "system.identity_issuers.replace_client_secret",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/identity-issuers/{issuer_id}/browser-login/actions/replace-client-secret",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "system",
+    "required_scopes": [
+      "management:authority",
+      "management:secrets",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "client_secret": {
+          "maxLength": 65536,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "client_secret"
+      ],
+      "type": "object"
+    },
+    "response_schema": "system.identity_issuers.replace_client_secret.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": true,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": true,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "system identity-issuers replace-client-secret",
+    "mcp_tool": "system_identity_issuers_replace_client_secret",
+    "mcp_toolset": "authority",
+    "console_capability_key": "system.identity_issuers.replace_client_secret"
+  },
+  {
+    "id": "system.identity_issuers.validate_browser_login",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/identity-issuers/{issuer_id}/browser-login/actions/validate",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "system",
+    "required_scopes": [
+      "management:authority",
+      "management:secrets",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.identity_issuers.validate_browser_login.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": true,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "system identity-issuers validate-browser-login",
+    "mcp_tool": "system_identity_issuers_validate_browser_login",
+    "mcp_toolset": "authority",
+    "console_capability_key": "system.identity_issuers.validate_browser_login"
+  },
+  {
+    "id": "system.identity_bindings.list",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/identity-bindings",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "system",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.identity_bindings.list.response",
+    "paginated": true,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system identity-bindings list",
+    "mcp_tool": "system_identity_bindings_list",
+    "mcp_toolset": "read",
+    "console_capability_key": "system.identity_bindings.list"
+  },
+  {
+    "id": "system.identity_bindings.create",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/identity-bindings/actions/create",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "system",
+    "required_scopes": [
+      "management:authority",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "external_subject": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "issuer_id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "user_id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "issuer_id",
+        "external_subject",
+        "user_id"
+      ],
+      "type": "object"
+    },
+    "response_schema": "system.identity_bindings.create.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "supported",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system identity-bindings create",
+    "mcp_tool": "system_identity_bindings_create",
+    "mcp_toolset": "authority",
+    "console_capability_key": "system.identity_bindings.create"
+  },
+  {
+    "id": "system.identity_bindings.get",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/identity-bindings/{binding_id}",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "system",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.identity_bindings.get.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system identity-bindings get",
+    "mcp_tool": "system_identity_bindings_get",
+    "mcp_toolset": "read",
+    "console_capability_key": "system.identity_bindings.get"
+  },
+  {
+    "id": "system.identity_bindings.relink",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/identity-bindings/{binding_id}/actions/relink",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "system",
+    "required_scopes": [
+      "management:authority",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "user_id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "user_id"
+      ],
+      "type": "object"
+    },
+    "response_schema": "system.identity_bindings.relink.response",
+    "paginated": false,
+    "etag_precondition": true,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system identity-bindings relink",
+    "mcp_tool": "system_identity_bindings_relink",
+    "mcp_toolset": "authority",
+    "console_capability_key": "system.identity_bindings.relink"
+  },
+  {
+    "id": "system.identity_bindings.remove",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/identity-bindings/{binding_id}/actions/remove",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "system",
+    "required_scopes": [
+      "management:authority",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.identity_bindings.remove.response",
+    "paginated": false,
+    "etag_precondition": true,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": true,
+    "destructive": true,
+    "approval_recommended": true,
+    "cli_path": "system identity-bindings remove",
+    "mcp_tool": "system_identity_bindings_remove",
+    "mcp_toolset": "authority",
+    "console_capability_key": "system.identity_bindings.remove"
+  },
+  {
+    "id": "system.provisioning_policies.list",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/provisioning-policies",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "system",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.provisioning_policies.list.response",
+    "paginated": true,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": true,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "system provisioning-policies list",
+    "mcp_tool": "system_provisioning_policies_list",
+    "mcp_toolset": "read",
+    "console_capability_key": "system.provisioning_policies.list"
+  },
+  {
+    "id": "system.provisioning_policies.create",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/provisioning-policies/actions/create",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "system",
+    "required_scopes": [
+      "management:authority",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "configuration": {
+          "type": "object"
+        },
+        "name": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "disabled"
+          ],
+          "type": "string"
+        },
+        "user_kind": {
+          "enum": [
+            "human",
+            "synthetic"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "status",
+        "user_kind",
+        "configuration"
+      ],
+      "type": "object"
+    },
+    "response_schema": "system.provisioning_policies.create.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "supported",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": true,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "system provisioning-policies create",
+    "mcp_tool": "system_provisioning_policies_create",
+    "mcp_toolset": "authority",
+    "console_capability_key": "system.provisioning_policies.create"
+  },
+  {
+    "id": "system.provisioning_policies.get",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/provisioning-policies/{policy_id}",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "system",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.provisioning_policies.get.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": true,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "system provisioning-policies get",
+    "mcp_tool": "system_provisioning_policies_get",
+    "mcp_toolset": "read",
+    "console_capability_key": "system.provisioning_policies.get"
+  },
+  {
+    "id": "system.provisioning_policies.update",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/provisioning-policies/{policy_id}/actions/update",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "system",
+    "required_scopes": [
+      "management:authority",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ],
+    "request_schema": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "configuration": {
+          "type": "object"
+        },
+        "name": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "disabled"
+          ],
+          "type": "string"
+        },
+        "user_kind": {
+          "enum": [
+            "human",
+            "synthetic"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "response_schema": "system.provisioning_policies.update.response",
+    "paginated": false,
+    "etag_precondition": true,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": false,
+    "high_impact": true,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "system provisioning-policies update",
+    "mcp_tool": "system_provisioning_policies_update",
+    "mcp_toolset": "authority",
+    "console_capability_key": "system.provisioning_policies.update"
+  },
+  {
+    "id": "organization.audit.list",
+    "resource_family": "organization",
+    "method": "GET",
+    "path": "/api/v1/organizations/{organization_id}/audit",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "organization",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "read_audit",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "organization.audit.list.response",
+    "paginated": true,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": true,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "organization audit list",
+    "mcp_tool": "organization_audit_list",
+    "mcp_toolset": "read",
+    "console_capability_key": "organization.audit.list"
+  },
+  {
+    "id": "system.audit.list",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/audit",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "system",
+    "required_scopes": [
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "read_audit",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.audit.list.response",
+    "paginated": true,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": true,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system audit list",
+    "mcp_tool": "system_audit_list",
+    "mcp_toolset": "read",
+    "console_capability_key": "system.audit.list"
+  },
+  {
+    "id": "system.operations.overview",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/operations",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "operations",
+    "required_scopes": [
+      "management:operations",
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "read_operations",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.operations.overview.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": true,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system operations overview",
+    "mcp_tool": "system_operations_overview",
+    "mcp_toolset": "operations",
+    "console_capability_key": "system.operations.overview"
+  },
+  {
+    "id": "system.operations.readiness",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/operations/readiness",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "operations",
+    "required_scopes": [
+      "management:operations",
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "read_operations",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.operations.readiness.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": true,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system operations readiness",
+    "mcp_tool": "system_operations_readiness",
+    "mcp_toolset": "operations",
+    "console_capability_key": "system.operations.readiness"
+  },
+  {
+    "id": "system.operations.runtime",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/operations/runtime",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "operations",
+    "required_scopes": [
+      "management:operations",
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "read_operations",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.operations.runtime.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": true,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system operations runtime",
+    "mcp_tool": "system_operations_runtime",
+    "mcp_toolset": "operations",
+    "console_capability_key": "system.operations.runtime"
+  },
+  {
+    "id": "system.operations.runtime.reconcile",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/operations/runtime/actions/reconcile",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "operations",
+    "required_scopes": [
+      "management:operations",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "recover_operations",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.operations.runtime.reconcile.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": true,
+    "high_impact": true,
+    "destructive": false,
+    "approval_recommended": true,
+    "cli_path": "system operations runtime reconcile",
+    "mcp_tool": "system_operations_runtime_reconcile",
+    "mcp_toolset": "operations",
+    "console_capability_key": "system.operations.runtime.reconcile"
+  },
+  {
+    "id": "system.operations.coordination",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/operations/coordination",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "operations",
+    "required_scopes": [
+      "management:operations",
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "read_operations",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.operations.coordination.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": true,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system operations coordination",
+    "mcp_tool": "system_operations_coordination",
+    "mcp_toolset": "operations",
+    "console_capability_key": "system.operations.coordination"
+  },
+  {
+    "id": "system.operations.recoveries",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/operations/coordination/recoveries",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "operations",
+    "required_scopes": [
+      "management:operations",
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "read_operations",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.operations.recoveries.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": true,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system operations recoveries",
+    "mcp_tool": "system_operations_recoveries",
+    "mcp_toolset": "operations",
+    "console_capability_key": "system.operations.recoveries"
+  },
+  {
+    "id": "system.operations.identity_state.cleanup",
+    "resource_family": "system",
+    "method": "POST",
+    "path": "/api/v1/system/operations/identity-state/actions/cleanup",
+    "authentication": "Management",
+    "mode": "command",
+    "qualification": "operations",
+    "required_scopes": [
+      "management:operations",
+      "management:write"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "recover_operations",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.operations.identity_state.cleanup.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": true,
+    "high_impact": true,
+    "destructive": true,
+    "approval_recommended": true,
+    "cli_path": "system operations identity-state cleanup",
+    "mcp_tool": "system_operations_identity_state_cleanup",
+    "mcp_toolset": "operations",
+    "console_capability_key": "system.operations.identity_state.cleanup"
+  },
+  {
+    "id": "system.operations.secret_custody",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/operations/secret-custody",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "operations",
+    "required_scopes": [
+      "management:operations",
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "read_operations",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.operations.secret_custody.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": true,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system operations secret-custody",
+    "mcp_tool": "system_operations_secret_custody",
+    "mcp_toolset": "operations",
+    "console_capability_key": "system.operations.secret_custody"
+  },
+  {
+    "id": "system.operations.telemetry",
+    "resource_family": "system",
+    "method": "GET",
+    "path": "/api/v1/system/operations/telemetry",
+    "authentication": "Management",
+    "mode": "query",
+    "qualification": "operations",
+    "required_scopes": [
+      "management:operations",
+      "management:read"
+    ],
+    "authorization_variants": [
+      {
+        "required_capability": "read_operations",
+        "condition": null
+      }
+    ],
+    "request_schema": null,
+    "response_schema": "system.operations.telemetry.response",
+    "paginated": false,
+    "etag_precondition": false,
+    "idempotency": "not_applicable",
+    "secret_input": false,
+    "one_time_secret_response": false,
+    "sensitive_result": true,
+    "high_impact": false,
+    "destructive": false,
+    "approval_recommended": false,
+    "cli_path": "system operations telemetry",
+    "mcp_tool": "system_operations_telemetry",
+    "mcp_toolset": "operations",
+    "console_capability_key": "system.operations.telemetry"
+  }
+]

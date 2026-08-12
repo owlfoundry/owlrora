@@ -1,0 +1,681 @@
+[
+  {
+    "id": "session.get",
+    "required_scopes": ["management:read"],
+    "authorization_variants": []
+  },
+  {
+    "id": "session.logout",
+    "required_scopes": [],
+    "authorization_variants": []
+  },
+  {
+    "id": "me.get",
+    "required_scopes": ["management:read"],
+    "authorization_variants": []
+  },
+  {
+    "id": "me.organizations.list",
+    "required_scopes": ["management:read"],
+    "authorization_variants": []
+  },
+  {
+    "id": "me.sessions.list",
+    "required_scopes": ["management:read"],
+    "authorization_variants": []
+  },
+  {
+    "id": "me.sessions.revoke",
+    "required_scopes": ["management:write"],
+    "authorization_variants": []
+  },
+  {
+    "id": "system.users.list",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_users",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.users.create",
+    "required_scopes": ["management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_users",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.users.get",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_users",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.users.update",
+    "required_scopes": ["management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_users",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.organizations.list",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_organizations",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.organizations.create",
+    "required_scopes": ["management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_organizations",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.organizations.get",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_organizations",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.organizations.update",
+    "required_scopes": ["management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_organizations",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "organization.get",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "read_organization",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "organization.update",
+    "required_scopes": ["management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "update_organization",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "organization.memberships.list",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "read_members",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "organization.memberships.create",
+    "required_scopes": ["management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_members",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "organization.memberships.get",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "read_members",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "organization.memberships.update",
+    "required_scopes": ["management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_members",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "organization.memberships.remove",
+    "required_scopes": ["management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_members",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.management_keys.list",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "read_management_keys",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.management_keys.create",
+    "required_scopes": ["management:authority", "management:secrets", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_keys",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.management_keys.get",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "read_management_keys",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.management_keys.update",
+    "required_scopes": ["management:authority", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_keys",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.management_keys.rotate",
+    "required_scopes": ["management:secrets", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_keys",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.management_key_policy.get",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_keys",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.management_key_policy.update",
+    "required_scopes": ["management:authority", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_system_keys",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "organization.management_keys.list",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "read_management_keys",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "organization.management_keys.create",
+    "required_scopes": ["management:authority", "management:secrets", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "create_management_keys",
+        "condition": null
+      },
+      {
+        "required_capability": "read_organization",
+        "condition": "local_member_self_service_policy"
+      }
+    ]
+  },
+  {
+    "id": "organization.management_keys.get",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "read_management_keys",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "organization.management_keys.update",
+    "required_scopes": ["management:authority", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_management_keys",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "organization.management_keys.rotate",
+    "required_scopes": ["management:secrets", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_management_keys",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "organization.api_key_policy.get",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "read_management_keys",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "organization.api_key_policy.update",
+    "required_scopes": ["management:authority", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "update_api_key_policy",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "organization.invitations.list",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "read_members",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "organization.invitations.get",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "read_members",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "organization.invitations.create",
+    "required_scopes": ["management:secrets", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_members",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "organization.invitations.resend",
+    "required_scopes": ["management:secrets", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_members",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "organization.invitations.revoke",
+    "required_scopes": ["management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_members",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "invitations.accept",
+    "required_scopes": ["management:write"],
+    "authorization_variants": []
+  },
+  {
+    "id": "system.administrators.list",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_administrators",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.administrators.grant",
+    "required_scopes": ["management:authority", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_administrators",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.administrators.revoke",
+    "required_scopes": ["management:authority", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_administrators",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.identity_issuers.list",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.identity_issuers.create",
+    "required_scopes": ["management:authority", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.identity_issuers.get",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.identity_issuers.update",
+    "required_scopes": ["management:authority", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.identity_issuers.refresh",
+    "required_scopes": ["management:authority", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.identity_issuers.replace_client_secret",
+    "required_scopes": ["management:authority", "management:secrets", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.identity_issuers.validate_browser_login",
+    "required_scopes": ["management:authority", "management:secrets", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.identity_bindings.list",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.identity_bindings.create",
+    "required_scopes": ["management:authority", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.identity_bindings.get",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.identity_bindings.relink",
+    "required_scopes": ["management:authority", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.identity_bindings.remove",
+    "required_scopes": ["management:authority", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.provisioning_policies.list",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.provisioning_policies.create",
+    "required_scopes": ["management:authority", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.provisioning_policies.get",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.provisioning_policies.update",
+    "required_scopes": ["management:authority", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "manage_identity",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "organization.audit.list",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "read_audit",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.audit.list",
+    "required_scopes": ["management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "read_audit",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.operations.overview",
+    "required_scopes": ["management:operations", "management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "read_operations",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.operations.readiness",
+    "required_scopes": ["management:operations", "management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "read_operations",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.operations.runtime",
+    "required_scopes": ["management:operations", "management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "read_operations",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.operations.runtime.reconcile",
+    "required_scopes": ["management:operations", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "recover_operations",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.operations.coordination",
+    "required_scopes": ["management:operations", "management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "read_operations",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.operations.recoveries",
+    "required_scopes": ["management:operations", "management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "read_operations",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.operations.identity_state.cleanup",
+    "required_scopes": ["management:operations", "management:write"],
+    "authorization_variants": [
+      {
+        "required_capability": "recover_operations",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.operations.secret_custody",
+    "required_scopes": ["management:operations", "management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "read_operations",
+        "condition": null
+      }
+    ]
+  },
+  {
+    "id": "system.operations.telemetry",
+    "required_scopes": ["management:operations", "management:read"],
+    "authorization_variants": [
+      {
+        "required_capability": "read_operations",
+        "condition": null
+      }
+    ]
+  }
+]

@@ -7,7 +7,7 @@
 OwlRora is a self-hosted AI gateway for routing requests across models and providers, observing usage and latency, and applying reliability and tenant policy in one place.
 
 > [!IMPORTANT]
-> OwlRora is currently at the runnable-foundation and product-design stage. The gateway protocols and management capabilities described below are product direction, not shipped behavior. The current `owlrora-server` embeds the React shell and exposes `GET /health`; the independent `owlrora` CLI currently provides help, version, and bounded checksum-verified self-update.
+> OwlRora currently ships its identity and management plane: PostgreSQL-backed tenancy and authorization, scoped Management API keys and sessions, external identity/OIDC administration, an embedded management console, and generated CLI/MCP clients. LLM ingress protocols, provider routing, Redis-backed allowance coordination, and usage accounting remain product direction rather than shipped data-plane behavior.
 
 ## RORA
 
@@ -66,13 +66,13 @@ The `seed_admin` user may administer the deployment directly or promote an exist
 
 ## Repository status and specifications
 
-The repository currently contains a Rust/Axum server foundation, an independently packaged `owlrora` CLI with native self-update, the provider-neutral key-custody SPI, an embedded React frontend, isolated crate packaging tests, container packaging, documentation, and separate CLI/server release automation for crates, GitHub Releases, and immutable versioned server images. Product implementation has not started.
+The repository currently contains a Rust/Axum identity and management server, PostgreSQL migrations, an embedded React console, generated typed CLI and bounded stdio MCP clients, native CLI self-update, the provider-neutral key-custody SPI, package/container validation, and separate CLI/server release automation for crates, GitHub Releases, and immutable versioned server images. The LLM gateway data plane remains planned.
 
 Target design lives under [`spec/`](spec/README.md). The thirteen specifications proceed from product and system boundaries through identity, authorization, upstream catalog, protocols, routing, budgets, observability, local-cache scale, management, operations, and implementation architecture. Public documentation lives under [`docs/`](docs/index.md) and distinguishes current behavior from product direction.
 
 ## Repository layout
 
-- `crates/owlrora-cli/` — independently versioned `owlrora` CLI, native updater, and planned stdio MCP/client commands;
+- `crates/owlrora-cli/` — independently versioned typed `owlrora` management CLI, bounded stdio MCP adapter, profiles, output handling, and native updater;
 - `crates/owlrora-key-provider/` — provider-neutral custom secret-custody SPI;
 - `crates/owlrora-server/` — Rust server/library, `owlrora-server` executable, and packaged frontend assets;
 - `apps/web/` — React and Vite frontend source;
@@ -85,7 +85,7 @@ Target design lives under [`spec/`](spec/README.md). The thirteen specifications
 - Rust stable
 - Node.js 24 or later
 - pnpm 11.20.0
-- Docker for container builds
+- Docker with Compose v2 for local PostgreSQL and Redis and for container builds
 
 ## Development
 
@@ -95,18 +95,20 @@ Install locked dependencies:
 make install
 ```
 
-Build the frontend and run the current server foundation:
+Create the ignored local application environment, then build the embedded frontend, start healthy PostgreSQL and Redis containers, and run the server:
 
 ```bash
+cp .env.example .env
 make dev
 ```
 
-The application listens on `http://localhost:8080` by default. Override the listener with `OWLRORA_ADDR`.
+The application listens on `http://127.0.0.1:8080` by default. Edit `.env` for local application overrides; optional Compose overrides live in `dev/.env`. See [`dev/README.md`](dev/README.md) for infrastructure targets.
 
-Inspect the independent CLI and its implemented update command:
+Inspect the independent management CLI, MCP adapter, and native updater:
 
 ```bash
 cargo run --locked --package owlrora-cli -- --help
+cargo run --locked --package owlrora-cli -- mcp --help
 cargo run --locked --package owlrora-cli -- update --version 0.0.0-dev --dry-run --force
 ```
 
@@ -140,13 +142,7 @@ Build and smoke-test the production image:
 make docker-build
 ```
 
-Run the locally built image:
-
-```bash
-docker run --rm --publish 8080:8080 owlrora:dev
-```
-
-The image serves the current API and embedded frontend from one non-root process. Its health endpoint is `GET /health`.
+The image serves the management API and embedded frontend from one non-root process. It requires PostgreSQL plus explicit `OWLRORA_DATABASE_URL`, `OWLRORA_PUBLIC_ORIGIN`, `OWLRORA_SEED_ADMIN_API_KEY`, and `OWLRORA_SECRET_ROOT` configuration. Its public liveness endpoint is `GET /health`; protected operational evidence is exposed through the management surface.
 
 ## License
 

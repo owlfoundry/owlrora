@@ -133,8 +133,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "$GITHUB_REF_NAME already has a GitHub Release; preserving it"
+            exit 0
+          fi
           version="${GITHUB_REF_NAME#cli-v}"
-          release_args=(--generate-notes --title "OwlRora CLI v${version}")
+          release_args=(
+            --generate-notes
+            --title "OwlRora CLI v${version}"
+            --verify-tag
+          )
           if [[ "$version" == *-* ]]; then
             release_args+=(--prerelease)
           fi

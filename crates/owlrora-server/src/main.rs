@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use std::{env, error::Error, io, net::SocketAddr, process::ExitCode};
+use std::{env, error::Error, io, process::ExitCode, sync::Arc};
 
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
@@ -68,13 +68,12 @@ async fn serve() -> Result<(), Box<dyn Error + Send + Sync>> {
         .with_span_list(false)
         .try_init()?;
 
-    let address = env::var("OWLRORA_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:8080".to_owned())
-        .parse::<SocketAddr>()?;
+    let config = Arc::new(owlrora_server::config::ServerConfig::from_environment()?);
+    let address = config.address;
     let listener = TcpListener::bind(address).await?;
-    tracing::info!(%address, "server listening");
+    tracing::info!(%address, profile = ?config.profile, "server listening");
 
-    owlrora_server::run(listener).await?;
+    owlrora_server::run(listener, config).await?;
     Ok(())
 }
 
