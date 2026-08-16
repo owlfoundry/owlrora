@@ -19,10 +19,8 @@ const NONCE_LEN: usize = 24;
 const HEADER_LEN: usize = MAGIC.len() + 1 + NONCE_LEN;
 const HKDF_SALT: &[u8] = b"owlrora/configuration-secret/hkdf-salt/v1";
 const HKDF_INFO: &[u8] = b"owlrora/configuration-secret/software-xchacha20-poly1305-v1/key";
-
 pub struct SoftwareSecretService {
     cipher: XChaCha20Poly1305,
-    _root: Arc<SecretRoot>,
 }
 
 impl std::fmt::Debug for SoftwareSecretService {
@@ -51,10 +49,7 @@ impl SoftwareSecretService {
             .map_err(|_| SoftwareSecretError::KeyDerivationFailed)?;
         let cipher = XChaCha20Poly1305::new((&key).into());
         key.fill(0);
-        Ok(Self {
-            cipher,
-            _root: root,
-        })
+        Ok(Self { cipher })
     }
 
     pub fn seal(

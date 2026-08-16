@@ -23,8 +23,10 @@ use clap::{
 use serde_json::json;
 
 use crate::{
-    client::{Invocation, ManagementClient, load_request_body, read_secret_stdin},
-    contract::{Operation, operation_by_cli_path, operations},
+    client::{
+        Invocation, ManagementClient, load_request_body, merge_secret_input, read_secret_stdin,
+    },
+    contract::{Operation, SecretInputMode, operation_by_cli_path, operations},
     mcp::McpOptions,
     profile::{
         KeySource, ManagementProfile, OutputFormat, ProfileOverrides, ProfileStore, TlsPolicy,
@@ -249,36 +251,49 @@ fn command_from_node(name: &str, node: CommandNode) -> Command {
             );
         }
         for parameter in operation.query_parameters() {
-            let mut argument = Arg::new((*parameter).to_owned())
-                .long(parameter.replace('_', "-"))
-                .value_name(parameter.to_ascii_uppercase());
-            if *parameter == "limit" {
-                argument = argument
-                    .value_parser(ValueParser::new(clap::value_parser!(u16).range(1..=200)));
+            let mut argument = Arg::new(parameter.name.clone())
+                .long(parameter.name.replace('_', "-"))
+                .value_name(parameter.name.to_ascii_uppercase())
+                .required(parameter.required);
+            if parameter.is_integer() {
+                argument = argument.value_parser(ValueParser::new(clap::value_parser!(u64)));
             }
             command = command.arg(argument);
         }
         if operation.accepts_body() {
+            let source_help = if operation.secret_input.is_some() {
+                "Read the JSON candidate from FILE, or '-' for redirected standard input; a FILE containing the protected field must be owner-only"
+            } else {
+                "Read the JSON candidate from FILE, or '-' for standard input"
+            };
             let mut source = Arg::new("from")
                 .long("from")
                 .value_name("FILE")
                 .value_hint(ValueHint::FilePath)
-                .help("Read the JSON candidate from FILE, or '-' for standard input");
-            if operation.secret_input {
+                .help(source_help);
+            if operation
+                .secret_input
+                .as_ref()
+                .is_some_and(|input| input.mode == SecretInputMode::ReplaceBody)
+            {
                 source = source.required_unless_present("secret-stdin");
             } else {
                 source = source.required(true);
             }
             command = command.arg(source);
         }
-        if operation.secret_input {
-            command = command.arg(
-                Arg::new("secret-stdin")
-                    .long("secret-stdin")
-                    .action(ArgAction::SetTrue)
-                    .conflicts_with("from")
-                    .help("Read the protected secret value from redirected standard input"),
-            );
+        if let Some(secret_input) = &operation.secret_input {
+            let mut argument = Arg::new("secret-stdin")
+                .long("secret-stdin")
+                .action(ArgAction::SetTrue)
+                .help(format!(
+                    "Read protected field {} from redirected standard input",
+                    secret_input.field
+                ));
+            if secret_input.mode == SecretInputMode::ReplaceBody {
+                argument = argument.conflicts_with("from");
+            }
+            command = command.arg(argument);
         }
         if operation.etag_precondition {
             command = command.arg(Arg::new("etag").long("etag").value_name("ETAG").help(
@@ -451,40 +466,56 @@ fn run_management(matches: &ArgMatches) -> Result<(), Box<dyn Error>> {
         );
     }
     for parameter in operation.query_parameters() {
-        if *parameter == "limit" {
-            if let Some(value) = arguments.get_one::<u16>(parameter) {
+        if parameter.is_integer() {
+            if let Some(value) = arguments.get_one::<u64>(&parameter.name) {
                 invocation
                     .query
-                    .insert((*parameter).to_owned(), value.to_string());
+                    .insert(parameter.name.clone(), value.to_string());
             }
-        } else if let Some(value) = arguments.get_one::<String>(parameter) {
+        } else if let Some(value) = arguments.get_one::<String>(&parameter.name) {
             invocation
                 .query
-                .insert((*parameter).to_owned(), value.clone());
+                .insert(parameter.name.clone(), value.clone());
         }
     }
     if operation.etag_precondition {
         invocation.etag = arguments.get_one::<String>("etag").cloned();
     }
     if operation.idempotency == "supported" {
-        invocation.idempotency_key = arguments.get_one::<String>("idempotency-key").cloned();
+        invocation.idempotency_key = arguments
+            .get_one::<String>("idempotency-key")
+            .cloned()
+            .or_else(|| {
+                operation
+                    .client_generated_idempotency_key
+                    .then(|| uuid::Uuid::now_v7().to_string())
+            });
     }
-    if operation.secret_input && arguments.get_flag("secret-stdin") {
-        let field = if operation.id == "invitations.accept" {
-            "token"
-        } else {
-            "client_secret"
-        };
-        invocation.body = Some(read_secret_stdin(overrides.key_stdin, field)?);
-    } else if operation.accepts_body()
+    let secret_from_stdin = operation.secret_input.is_some() && arguments.get_flag("secret-stdin");
+    if operation.accepts_body()
         && let Some(source) = arguments.get_one::<String>("from")
     {
-        if overrides.key_stdin && source == "-" {
+        if (overrides.key_stdin || secret_from_stdin) && source == "-" {
             return Err(client::ClientError::ConflictingStdin.into());
         }
-        let (body, etag) = load_request_body(source, invocation.etag.take())?;
+        let protected_source = operation.secret_input.is_some() && !secret_from_stdin;
+        let (body, etag) = load_request_body(source, invocation.etag.take(), protected_source)?;
         invocation.body = Some(body);
         invocation.etag = etag;
+    }
+    if secret_from_stdin {
+        let secret_input = operation
+            .secret_input
+            .as_ref()
+            .expect("secret flag is defined only for secret input operations");
+        let secret = read_secret_stdin(overrides.key_stdin, &secret_input.field)?;
+        invocation.body = Some(match secret_input.mode {
+            SecretInputMode::ReplaceBody => secret,
+            SecretInputMode::MergeIntoCandidate => merge_secret_input(
+                invocation.body.take().expect("merge mode requires --from"),
+                secret,
+            )?,
+        });
     }
     let resolved = profile::resolve(&overrides)?;
     let format = resolved.output;
@@ -587,12 +618,46 @@ mod tests {
             .unwrap();
         let (path, arguments) = selected_command(&matches);
         assert_eq!(path, "system users list");
-        assert_eq!(arguments.get_one::<u16>("limit"), Some(&20));
+        assert_eq!(arguments.get_one::<u64>("limit"), Some(&20));
         assert!(
             command()
                 .try_get_matches_from(["owlrora", "system", "raw-request"])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn usage_commands_require_and_parse_generated_query_flags() {
+        assert!(
+            command()
+                .try_get_matches_from(["owlrora", "system", "usage", "get"])
+                .is_err()
+        );
+        let matches = command()
+            .try_get_matches_from([
+                "owlrora",
+                "system",
+                "usage",
+                "breakdown",
+                "--start",
+                "2026-01-01T00:00:00Z",
+                "--end",
+                "2026-01-02T00:00:00Z",
+                "--fact-family",
+                "attempts",
+                "--dimension",
+                "origin",
+                "--limit",
+                "20",
+            ])
+            .unwrap();
+        let (path, arguments) = selected_command(&matches);
+        assert_eq!(path, "system usage breakdown");
+        assert_eq!(
+            arguments.get_one::<String>("start").unwrap(),
+            "2026-01-01T00:00:00Z"
+        );
+        assert_eq!(arguments.get_one::<u64>("limit"), Some(&20));
     }
 
     #[test]
@@ -623,6 +688,63 @@ mod tests {
                 ])
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn generated_secret_input_modes_are_descriptor_driven() {
+        let merge = operation_by_cli_path("organization upstream-credentials create").unwrap();
+        let merge_input = merge.secret_input.as_ref().unwrap();
+        assert_eq!(merge_input.field, "secret");
+        assert_eq!(merge_input.mode, SecretInputMode::MergeIntoCandidate);
+        assert!(
+            command()
+                .try_get_matches_from([
+                    "owlrora",
+                    "organization",
+                    "upstream-credentials",
+                    "create",
+                    "org-1",
+                    "--from",
+                    "candidate.json",
+                    "--secret-stdin",
+                ])
+                .is_ok()
+        );
+        assert!(
+            command()
+                .try_get_matches_from([
+                    "owlrora",
+                    "organization",
+                    "upstream-credentials",
+                    "create",
+                    "org-1",
+                    "--secret-stdin",
+                ])
+                .is_err()
+        );
+
+        let replace =
+            operation_by_cli_path("system egress-network-policies replace-custom-ca").unwrap();
+        let replace_input = replace.secret_input.as_ref().unwrap();
+        assert_eq!(replace_input.field, "custom_ca_pem");
+        assert_eq!(replace_input.mode, SecretInputMode::ReplaceBody);
+        assert!(
+            command()
+                .try_get_matches_from([
+                    "owlrora",
+                    "system",
+                    "egress-network-policies",
+                    "replace-custom-ca",
+                    "policy-1",
+                    "--secret-stdin",
+                    "--etag",
+                    "\"etag\"",
+                ])
+                .is_ok()
+        );
+
+        let codex = operation_by_cli_path("system upstream-credentials codex-login start").unwrap();
+        assert!(codex.secret_input.is_none());
     }
 
     #[test]

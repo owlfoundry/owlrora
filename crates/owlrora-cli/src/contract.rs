@@ -10,6 +10,32 @@ pub enum OperationMode {
     Command,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretInputMode {
+    ReplaceBody,
+    MergeIntoCandidate,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct SecretInput {
+    pub field: String,
+    pub mode: SecretInputMode,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct QueryParameter {
+    pub name: String,
+    pub schema: Value,
+    pub required: bool,
+}
+
+impl QueryParameter {
+    pub fn is_integer(&self) -> bool {
+        self.schema.get("type").and_then(Value::as_str) == Some("integer")
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct AuthorizationVariant {
     pub required_capability: String,
@@ -26,10 +52,12 @@ pub struct Operation {
     pub required_scopes: Vec<String>,
     pub authorization_variants: Vec<AuthorizationVariant>,
     pub request_schema: Option<Value>,
-    pub paginated: bool,
+    #[serde(default)]
+    pub query_parameters: Vec<QueryParameter>,
     pub etag_precondition: bool,
     pub idempotency: String,
-    pub secret_input: bool,
+    pub client_generated_idempotency_key: bool,
+    pub secret_input: Option<SecretInput>,
     pub one_time_secret_response: bool,
     pub sensitive_result: bool,
     pub high_impact: bool,
@@ -55,22 +83,8 @@ impl Operation {
         parameters
     }
 
-    pub fn query_parameters(&self) -> &'static [&'static str] {
-        if self.id.ends_with("audit.list") {
-            &[
-                "cursor",
-                "limit",
-                "since",
-                "before",
-                "operation_id",
-                "outcome",
-                "target_resource_kind",
-            ]
-        } else if self.paginated {
-            &["cursor", "limit"]
-        } else {
-            &[]
-        }
+    pub fn query_parameters(&self) -> &[QueryParameter] {
+        &self.query_parameters
     }
 
     pub const fn accepts_body(&self) -> bool {

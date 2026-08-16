@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
 use sqlx::{Postgres, Row as _, Transaction};
@@ -6,7 +8,8 @@ use uuid::Uuid;
 use crate::{
     adapters::postgres::{AuditRecord, RuntimeEvent},
     domain::{
-        Actor, Capability, ManagementScope, OrganizationId, OrganizationRole, ResourceScope, UserId,
+        Actor, Capability, JwtRouteCeiling, LlmFeatureCapability, LlmScope, ManagementScope,
+        OrganizationId, OrganizationRole, ResourceScope, RouteId, UserId,
     },
 };
 
@@ -576,7 +579,7 @@ impl Application {
         let (cursor, limit) = page_parameters(&family, cursor, limit)?;
         let rows = sqlx::query(
             "SELECT id, organization_id, user_id, role, status, llm_scope_ceiling,
-                    created_at, updated_at
+                    llm_capability_ceiling, llm_route_ceiling, created_at, updated_at
              FROM memberships
              WHERE organization_id=$1 AND ($2::uuid IS NULL OR id < $2)
              ORDER BY id DESC LIMIT $3",
@@ -627,6 +630,7 @@ impl Application {
             },
         )?;
         validate_llm_scopes(&input.llm_scope_ceiling)?;
+        validate_route_ceiling(&input.llm_route_ceiling)?;
         let mut transaction = self.store.begin().await?;
         let handle = match self
             .begin_idempotent_command(
@@ -650,8 +654,8 @@ impl Application {
         sqlx::query(
             "INSERT INTO memberships(
                 id, organization_id, user_id, role, status, llm_scope_ceiling,
-                etag_token, created_by_principal
-             ) VALUES ($1,$2,$3,$4,'active',$5,$6,$7)",
+                llm_capability_ceiling, llm_route_ceiling, etag_token, created_by_principal
+             ) VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8,$9)",
         )
         .bind(id)
         .bind(organization_id.as_uuid())
@@ -659,6 +663,14 @@ impl Application {
         .bind(role_str(input.role))
         .bind(
             serde_json::to_value(&input.llm_scope_ceiling)
+                .map_err(|_| ApplicationError::Internal)?,
+        )
+        .bind(
+            serde_json::to_value(&input.llm_capability_ceiling)
+                .map_err(|_| ApplicationError::Internal)?,
+        )
+        .bind(
+            serde_json::to_value(&input.llm_route_ceiling)
                 .map_err(|_| ApplicationError::Internal)?,
         )
         .bind(Uuid::now_v7())
@@ -687,7 +699,13 @@ impl Application {
                     "membership",
                     id.to_string(),
                     "organizations.members.create",
-                    &["user_id", "role", "llm_scope_ceiling"],
+                    &[
+                        "user_id",
+                        "role",
+                        "llm_scope_ceiling",
+                        "llm_capability_ceiling",
+                        "llm_route_ceiling",
+                    ],
                 ),
                 Some(&runtime_event(
                     "membership.changed",
@@ -710,11 +728,14 @@ impl Application {
         require_nonempty_update([
             input.role.is_omitted(),
             input.llm_scope_ceiling.is_omitted(),
+            input.llm_capability_ceiling.is_omitted(),
+            input.llm_route_ceiling.is_omitted(),
         ])?;
         let mut transaction = self.store.begin().await?;
         lock_active_organization(&mut transaction, organization_id).await?;
         let row = sqlx::query(
-            "SELECT id, role, llm_scope_ceiling, etag_token
+            "SELECT id, role, llm_scope_ceiling, llm_capability_ceiling,
+                    llm_route_ceiling, etag_token
              FROM memberships
              WHERE organization_id=$1 AND user_id=$2 AND status='active' FOR UPDATE",
         )
@@ -728,6 +749,17 @@ impl Application {
         let mut role = current_role;
         let mut scopes: Vec<String> = serde_json::from_value(row.try_get("llm_scope_ceiling")?)
             .map_err(|_| ApplicationError::Internal)?;
+        let mut llm_capabilities: BTreeSet<LlmFeatureCapability> =
+            serde_json::from_value(row.try_get("llm_capability_ceiling")?)
+                .map_err(|_| ApplicationError::Internal)?;
+        let mut llm_routes: JwtRouteCeiling =
+            serde_json::from_value(row.try_get("llm_route_ceiling")?)
+                .map_err(|_| ApplicationError::Internal)?;
+        validate_llm_scopes(&scopes).map_err(|_| ApplicationError::Internal)?;
+        validate_route_ceiling(&llm_routes).map_err(|_| ApplicationError::Internal)?;
+        let current_scopes = scopes.clone();
+        let current_llm_capabilities = llm_capabilities.clone();
+        let current_llm_routes = llm_routes.clone();
         match input.role {
             UpdateField::Omitted => {}
             UpdateField::Null => {
@@ -763,6 +795,27 @@ impl Application {
                 scopes = value;
             }
         }
+        match input.llm_capability_ceiling {
+            UpdateField::Omitted => {}
+            UpdateField::Null => {
+                return Err(ApplicationError::Validation(
+                    "llm_capability_ceiling cannot be null".to_owned(),
+                ));
+            }
+            UpdateField::Value(value) => llm_capabilities = value,
+        }
+        match input.llm_route_ceiling {
+            UpdateField::Omitted => {}
+            UpdateField::Null => {
+                return Err(ApplicationError::Validation(
+                    "llm_route_ceiling cannot be null".to_owned(),
+                ));
+            }
+            UpdateField::Value(value) => {
+                validate_route_ceiling(&value)?;
+                llm_routes = value;
+            }
+        }
         let current_tag = EntityTag::for_resource("membership", id, row.try_get("etag_token")?);
         require_etag(if_match, &current_tag)?;
         if current_role == OrganizationRole::Owner && role != OrganizationRole::Owner {
@@ -770,17 +823,23 @@ impl Application {
         }
         sqlx::query(
             "UPDATE memberships SET role=$3, llm_scope_ceiling=$4,
-                    etag_token=$5, updated_at=now()
+                    llm_capability_ceiling=$5, llm_route_ceiling=$6,
+                    etag_token=$7, updated_at=now()
              WHERE organization_id=$1 AND id=$2",
         )
         .bind(organization_id.as_uuid())
         .bind(id)
         .bind(role_str(role))
         .bind(serde_json::to_value(&scopes).map_err(|_| ApplicationError::Internal)?)
+        .bind(serde_json::to_value(&llm_capabilities).map_err(|_| ApplicationError::Internal)?)
+        .bind(serde_json::to_value(&llm_routes).map_err(|_| ApplicationError::Internal)?)
         .bind(Uuid::now_v7())
         .execute(&mut *transaction)
         .await?;
-        let security_tightening = role_rank(role) < role_rank(current_role);
+        let security_tightening = role_rank(role) < role_rank(current_role)
+            || !llm_scopes_are_superset(&scopes, &current_scopes)
+            || !llm_capabilities.is_superset(&current_llm_capabilities)
+            || !route_ceiling_is_superset(&llm_routes, &current_llm_routes);
         if role != current_role {
             revoke_external_sessions_for_membership(&mut transaction, organization_id, user_id)
                 .await?;
@@ -795,7 +854,12 @@ impl Application {
                     "membership",
                     id.to_string(),
                     "organizations.members.update",
-                    &["role", "llm_scope_ceiling"],
+                    &[
+                        "role",
+                        "llm_scope_ceiling",
+                        "llm_capability_ceiling",
+                        "llm_route_ceiling",
+                    ],
                 ),
                 Some(&runtime_event(
                     "membership.changed",
@@ -1030,6 +1094,10 @@ fn membership_from_row(row: sqlx::postgres::PgRow) -> Result<Membership, Applica
         status: row.try_get("status")?,
         llm_scope_ceiling: serde_json::from_value(row.try_get("llm_scope_ceiling")?)
             .map_err(|_| ApplicationError::Internal)?,
+        llm_capability_ceiling: serde_json::from_value(row.try_get("llm_capability_ceiling")?)
+            .map_err(|_| ApplicationError::Internal)?,
+        llm_route_ceiling: serde_json::from_value(row.try_get("llm_route_ceiling")?)
+            .map_err(|_| ApplicationError::Internal)?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
     })
@@ -1045,6 +1113,7 @@ where
 {
     let row = sqlx::query(
         "SELECT id, organization_id, user_id, role, status, llm_scope_ceiling,
+                llm_capability_ceiling, llm_route_ceiling,
                 etag_token, created_at, updated_at
          FROM memberships WHERE organization_id=$1 AND user_id=$2 AND status='active'",
     )
@@ -1123,23 +1192,59 @@ fn validate_slug(value: Option<&str>) -> Result<(), ApplicationError> {
     Ok(())
 }
 
-fn validate_llm_scopes(scopes: &[String]) -> Result<(), ApplicationError> {
-    const ALLOWED: &[&str] = &[
-        "llm:invoke",
-        "llm:stream",
-        "llm:tools",
-        "llm:multimodal-input",
-        "llm:structured-output",
-    ];
-    if scopes
-        .iter()
-        .any(|scope| !ALLOWED.contains(&scope.as_str()))
+fn validate_route_ceiling(ceiling: &JwtRouteCeiling) -> Result<(), ApplicationError> {
+    if let JwtRouteCeiling::Routes { route_ids } = ceiling
+        && (route_ids.is_empty()
+            || route_ids
+                .iter()
+                .any(|route_id| route_id.parse::<RouteId>().is_err()))
     {
         return Err(ApplicationError::Validation(
-            "llm_scope_ceiling contains an unknown scope".to_owned(),
+            "an exact route ceiling must contain valid route IDs; use kind=none to deny".to_owned(),
         ));
     }
     Ok(())
+}
+
+fn validate_llm_scopes(scopes: &[String]) -> Result<(), ApplicationError> {
+    let parsed = scopes
+        .iter()
+        .map(|scope| scope.parse::<LlmScope>())
+        .collect::<Result<BTreeSet<_>, _>>()
+        .map_err(|_| {
+            ApplicationError::Validation("llm_scope_ceiling contains an unknown scope".to_owned())
+        })?;
+    if parsed.len() != scopes.len() {
+        return Err(ApplicationError::Validation(
+            "llm_scope_ceiling contains duplicate scopes".to_owned(),
+        ));
+    }
+    if !parsed.is_empty() && !parsed.contains(&LlmScope::Invoke) {
+        return Err(ApplicationError::Validation(
+            "a non-empty llm_scope_ceiling must contain llm:invoke".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn llm_scopes_are_superset(candidate: &[String], current: &[String]) -> bool {
+    let candidate = candidate.iter().collect::<BTreeSet<_>>();
+    let current = current.iter().collect::<BTreeSet<_>>();
+    candidate.is_superset(&current)
+}
+
+fn route_ceiling_is_superset(candidate: &JwtRouteCeiling, current: &JwtRouteCeiling) -> bool {
+    match (candidate, current) {
+        (JwtRouteCeiling::AllOrganizationGranted, _) | (_, JwtRouteCeiling::None) => true,
+        (
+            JwtRouteCeiling::Routes {
+                route_ids: candidate,
+            },
+            JwtRouteCeiling::Routes { route_ids: current },
+        ) => candidate.is_superset(current),
+        (JwtRouteCeiling::None, _)
+        | (JwtRouteCeiling::Routes { .. }, JwtRouteCeiling::AllOrganizationGranted) => false,
+    }
 }
 
 async fn lock_active_organization(
@@ -1240,11 +1345,11 @@ fn runtime_event(kind: &str, scope: Value, security_tightening: bool) -> Runtime
     }
 }
 
-pub(super) fn default_organization_api_key_policy() -> Value {
+pub(crate) fn default_organization_api_key_policy() -> Value {
     json!({
         "management": {
             "allowed_scopes": ["management:read", "management:write", "management:secrets", "management:authority"],
-            "allowed_capabilities": ["read_organization", "update_organization", "read_members", "manage_members", "read_management_keys", "create_management_keys", "manage_management_keys", "update_api_key_policy", "read_audit"],
+            "allowed_capabilities": ["read_organization", "update_organization", "read_members", "manage_members", "read_management_keys", "create_management_keys", "manage_management_keys", "update_api_key_policy", "read_gateway_keys", "create_gateway_keys", "manage_gateway_keys", "manage_byok", "configure_routes", "configure_budgets", "read_usage", "read_audit"],
             "max_active_keys": 100,
             "max_expiry_days": 365,
             "max_overlap_seconds": 3600
@@ -1257,8 +1362,30 @@ pub(super) fn default_organization_api_key_policy() -> Value {
             "max_expiry_days": 0,
             "max_overlap_seconds": 0
         },
-        "gateway": {"enabled": false},
-        "gateway_member_self_service": {"enabled": false}
+        "gateway": {
+            "enabled": false,
+            "allowed_scopes": ["llm:invoke", "llm:stream", "llm:tools", "llm:multimodal-input", "llm:structured-output"],
+            "allowed_capabilities": [],
+            "allowed_route_ids": [],
+            "max_active_keys": 0,
+            "max_expiry_days": 365,
+            "max_overlap_seconds": 3600,
+            "budget": {"max_limit_cost_nanos": "0", "allowed_modes": ["enforce"]},
+            "rate": {"max_requests_per_minute": 0, "max_input_units_per_minute": 0},
+            "concurrency": {"max_limit": 0, "allowed_modes": []}
+        },
+        "gateway_member_self_service": {
+            "enabled": false,
+            "allowed_scopes": [],
+            "allowed_capabilities": [],
+            "allowed_route_ids": [],
+            "max_active_keys": 0,
+            "max_expiry_days": 0,
+            "max_overlap_seconds": 0,
+            "budget": {"max_limit_cost_nanos": "0", "allowed_modes": []},
+            "rate": {"max_requests_per_minute": 0, "max_input_units_per_minute": 0},
+            "concurrency": {"max_limit": 0, "allowed_modes": []}
+        }
     })
 }
 
@@ -1340,17 +1467,207 @@ mod tests {
     }
 
     #[test]
-    fn validation_rejects_unknown_llm_scopes_and_unsafe_slugs() {
+    fn validation_rejects_unknown_or_incomplete_llm_scopes_and_unsafe_slugs() {
+        assert!(validate_llm_scopes(&[]).is_ok());
         assert!(validate_llm_scopes(&["llm:invoke".to_owned()]).is_ok());
+        assert!(validate_llm_scopes(&["llm:stream".to_owned()]).is_err());
+        assert!(validate_llm_scopes(&["llm:invoke".to_owned(), "llm:invoke".to_owned()]).is_err());
         assert!(validate_llm_scopes(&["llm:*".to_owned()]).is_err());
         assert!(validate_slug(Some("safe-slug-1")).is_ok());
         assert!(validate_slug(Some("Unsafe")).is_err());
     }
 
     #[test]
+    fn membership_ceiling_narrowing_is_conservative() {
+        let route_a = RouteId::new().to_string();
+        let route_b = RouteId::new().to_string();
+        assert!(!llm_scopes_are_superset(
+            &["llm:invoke".to_owned()],
+            &["llm:invoke".to_owned(), "llm:stream".to_owned()],
+        ));
+        assert!(route_ceiling_is_superset(
+            &JwtRouteCeiling::AllOrganizationGranted,
+            &JwtRouteCeiling::Routes {
+                route_ids: BTreeSet::from([route_a.clone()]),
+            },
+        ));
+        assert!(!route_ceiling_is_superset(
+            &JwtRouteCeiling::Routes {
+                route_ids: BTreeSet::from([route_a]),
+            },
+            &JwtRouteCeiling::Routes {
+                route_ids: BTreeSet::from([route_b]),
+            },
+        ));
+        assert!(!route_ceiling_is_superset(
+            &JwtRouteCeiling::None,
+            &JwtRouteCeiling::AllOrganizationGranted,
+        ));
+    }
+
+    #[tokio::test]
+    async fn membership_llm_narrowing_journals_security_tightening() {
+        use std::{collections::BTreeMap, sync::Arc};
+
+        use crate::{
+            adapters::postgres::test_support::{
+                connect_from_environment, shared_database_test_lock,
+            },
+            config::ServerConfig,
+            domain::generate_management_key,
+            runtime::RuntimePublisher,
+            secrets::{CustodyPair, CustodyRegistry, SecretService},
+        };
+
+        let _database_guard = shared_database_test_lock().await;
+        let Some(store) = connect_from_environment().await else {
+            return;
+        };
+        let Ok(redis_url) = std::env::var("OWLRORA_TEST_REDIS_URL") else {
+            return;
+        };
+        let seed_key = generate_management_key().expose_once();
+        let secret_root = URL_SAFE_NO_PAD.encode([11_u8; 32]);
+        let config = Arc::new(
+            ServerConfig::from_values(&BTreeMap::from([
+                (
+                    "OWLRORA_DATABASE_URL".to_owned(),
+                    std::env::var("OWLRORA_TEST_DATABASE_URL").unwrap(),
+                ),
+                (
+                    "OWLRORA_PUBLIC_ORIGIN".to_owned(),
+                    "http://127.0.0.1:8080".to_owned(),
+                ),
+                ("OWLRORA_REDIS_URL".to_owned(), redis_url),
+                (
+                    "OWLRORA_NODE_INSTANCE_ID".to_owned(),
+                    format!("resources-test-{}", Uuid::now_v7()),
+                ),
+                ("OWLRORA_SEED_ADMIN_API_KEY".to_owned(), seed_key.clone()),
+                ("OWLRORA_SECRET_ROOT".to_owned(), secret_root),
+            ]))
+            .unwrap(),
+        );
+        let organization_id = OrganizationId::new();
+        let user_id = UserId::new();
+        let membership_id = Uuid::now_v7();
+        let mut transaction = store.begin().await.unwrap();
+        sqlx::query(
+            "INSERT INTO users(id,kind,status,display_name,created_by_principal,etag_token)
+             VALUES ($1,'human','active','Narrowing member','{}',$2)",
+        )
+        .bind(user_id.as_uuid())
+        .bind(Uuid::now_v7())
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO organizations(
+                id,kind,status,name,created_by_principal,etag_token
+             ) VALUES ($1,'ordinary','active',$2,'{}',$3)",
+        )
+        .bind(organization_id.as_uuid())
+        .bind(format!("narrowing-{organization_id}"))
+        .bind(Uuid::now_v7())
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO organization_api_key_policies(organization_id,policy,etag_token)
+             VALUES ($1,$2,$3)",
+        )
+        .bind(organization_id.as_uuid())
+        .bind(default_organization_api_key_policy())
+        .bind(Uuid::now_v7())
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO memberships(
+                id,organization_id,user_id,role,status,llm_scope_ceiling,
+                llm_capability_ceiling,llm_route_ceiling,created_by_principal,etag_token
+             ) VALUES ($1,$2,$3,'owner','active',
+                '[\"llm:invoke\",\"llm:stream\"]','[\"streaming\"]',
+                '{\"kind\":\"all_organization_granted\"}','{}',$4)",
+        )
+        .bind(membership_id)
+        .bind(organization_id.as_uuid())
+        .bind(user_id.as_uuid())
+        .bind(Uuid::now_v7())
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        let secrets = Arc::new(
+            SecretService::new(
+                config.secret_root.clone(),
+                CustodyRegistry::default(),
+                CustodyPair::software(),
+            )
+            .unwrap(),
+        );
+        let runtime = RuntimePublisher::start(
+            store.clone(),
+            Arc::clone(&secrets),
+            format!("narrowing-test-{}", Uuid::now_v7()),
+        )
+        .await
+        .unwrap();
+        let application =
+            Application::new(store.clone(), Arc::clone(&runtime), config, secrets).unwrap();
+        let identity = application
+            .authenticate_management_key(&seed_key, "narrowing-test".to_owned())
+            .unwrap();
+
+        let (_, mut etag) = load_membership(store.pool(), organization_id, user_id)
+            .await
+            .unwrap();
+        let updates = [
+            UpdateMembership {
+                llm_scope_ceiling: UpdateField::Value(vec!["llm:invoke".to_owned()]),
+                ..UpdateMembership::default()
+            },
+            UpdateMembership {
+                llm_capability_ceiling: UpdateField::Value(BTreeSet::new()),
+                ..UpdateMembership::default()
+            },
+            UpdateMembership {
+                llm_route_ceiling: UpdateField::Value(JwtRouteCeiling::None),
+                ..UpdateMembership::default()
+            },
+        ];
+        for update in updates {
+            let (_, next_etag) = application
+                .update_membership(
+                    &identity,
+                    organization_id,
+                    user_id,
+                    Some(etag.as_str()),
+                    update,
+                )
+                .await
+                .unwrap();
+            etag = next_etag;
+            let revision = store.current_revision().await.unwrap();
+            let classification = sqlx::query_scalar::<_, String>(
+                "SELECT security_classification FROM configuration_journal WHERE revision=$1",
+            )
+            .bind(revision)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+            assert_eq!(classification, "tightening");
+        }
+        runtime.shutdown().await;
+    }
+
+    #[test]
     fn default_policy_keeps_module_two_gateway_issuance_disabled() {
         let policy = default_organization_api_key_policy();
         assert_eq!(policy["gateway"]["enabled"], false);
+        assert_eq!(policy["gateway"]["max_active_keys"], 0);
+        assert_eq!(policy["gateway"]["allowed_scopes"][0], "llm:invoke");
         assert_eq!(
             policy["member_self_service"]["management_key_creation"],
             false

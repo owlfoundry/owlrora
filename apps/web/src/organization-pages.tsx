@@ -224,7 +224,13 @@ export function MembersPage({
     event.preventDefault();
     setSubmitting(true);
     setError(null);
-    const body = { user_id: userId.trim(), role, llm_scope_ceiling: splitScopes(scopeText) };
+    const body = {
+      user_id: userId.trim(),
+      role,
+      llm_scope_ceiling: splitScopes(scopeText),
+      llm_capability_ceiling: [],
+      llm_route_ceiling: { kind: "none" },
+    };
     try {
       await apiRequest<Membership>(
         `${apiOrganizationBase(organizationId)}/memberships/actions/create`,
@@ -369,7 +375,12 @@ export function MemberDetailPage({
   const value = membership.value;
   const selectedRole = role ?? value.role;
   const selectedScopes = scopeText ?? value.llm_scope_ceiling.join(", ");
-  const candidate = { role: selectedRole, llm_scope_ceiling: splitScopes(selectedScopes) };
+  const candidate = {
+    role: selectedRole,
+    llm_scope_ceiling: splitScopes(selectedScopes),
+    llm_capability_ceiling: value.llm_capability_ceiling,
+    llm_route_ceiling: value.llm_route_ceiling,
+  };
 
   async function save(event: FormEvent): Promise<void> {
     event.preventDefault();
@@ -515,6 +526,8 @@ export function InvitationsPage({
           intended_email: email.trim() === "" ? null : email.trim(),
           intended_role: role,
           llm_scope_ceiling: splitScopes(scopeText),
+          llm_capability_ceiling: [],
+          llm_route_ceiling: { kind: "none" },
           expires_at: new Date(expiresAt).toISOString(),
         },
         nonRepeatable: true,
@@ -572,6 +585,7 @@ export function InvitationsPage({
         requestId={outcomeUnknown.requestId}
         recoveryHref={`${organizationBase(organizationId)}/invitations`}
         committed={outcomeUnknown.committed}
+        oneTimeMaterial
       />
     );
   }

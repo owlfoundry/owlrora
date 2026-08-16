@@ -32,11 +32,19 @@ const CSRF_PREFIX: &str = "owlrora_csrf_v1";
 
 impl Application {
     pub(crate) fn security_generation(&self) -> Result<Arc<RuntimeGeneration>, ApplicationError> {
+        let now = Utc::now();
         let generation = self.runtime.capture();
         let status = self.runtime.status();
         let max_age = chrono::Duration::from_std(self.config.max_security_snapshot_age)
             .map_err(|_| ApplicationError::Internal)?;
-        if Utc::now().signed_duration_since(status.confirmed_at) > max_age {
+        if now.signed_duration_since(status.confirmed_at) > max_age
+            || generation
+                .snapshot
+                .organizations
+                .values()
+                .filter_map(|organization| organization.pending_tightening_deadline)
+                .any(|deadline| deadline <= now)
+        {
             return Err(ApplicationError::DependencyUnavailable);
         }
         Ok(generation)
@@ -186,7 +194,9 @@ impl Application {
                 ..
             } => Some(management_api_key_id.as_uuid()),
             Principal::SeedAdmin => None,
-            Principal::LocalUser { .. } => return Err(ApplicationError::InvalidCredential),
+            Principal::LocalUser { .. } | Principal::OrganizationGatewayApiKey { .. } => {
+                return Err(ApplicationError::InvalidCredential);
+            }
         };
         let captured_capability_ceiling = match principal {
             Principal::SeedAdmin => json!(["system_administration"]),
@@ -204,7 +214,9 @@ impl Application {
                 .get(management_api_key_id)
                 .map(|key| key.capability_ceiling.clone())
                 .ok_or(ApplicationError::CredentialInactive)?,
-            Principal::LocalUser { .. } => return Err(ApplicationError::InvalidCredential),
+            Principal::LocalUser { .. } | Principal::OrganizationGatewayApiKey { .. } => {
+                return Err(ApplicationError::InvalidCredential);
+            }
         };
 
         let mut transaction = self.store.begin().await?;
@@ -656,6 +668,7 @@ impl Application {
                     effective_organizations,
                 ))
             }
+            Principal::OrganizationGatewayApiKey { .. } => Err(ApplicationError::InvalidCredential),
         }
     }
 
@@ -760,6 +773,7 @@ impl Application {
                 .management_keys_by_id
                 .get(&management_api_key_id)
                 .is_some_and(|key| value_has_capability(&key.capability_ceiling, capability)),
+            Principal::OrganizationGatewayApiKey { .. } => false,
         }
     }
 
@@ -1155,6 +1169,11 @@ fn role_allows(role: OrganizationRole, capability: Capability) -> bool {
             | Capability::CreateManagementKeys
             | Capability::ManageManagementKeys
             | Capability::UpdateApiKeyPolicy
+            | Capability::CreateGatewayKeys
+            | Capability::ManageGatewayKeys
+            | Capability::ManageByok
+            | Capability::ConfigureRoutes
+            | Capability::ConfigureBudgets
     );
     if administrative {
         return matches!(role, OrganizationRole::Owner | OrganizationRole::Admin);
@@ -1164,6 +1183,8 @@ fn role_allows(role: OrganizationRole, capability: Capability) -> bool {
         Capability::ReadOrganization
             | Capability::ReadMembers
             | Capability::ReadManagementKeys
+            | Capability::ReadGatewayKeys
+            | Capability::ReadUsage
             | Capability::ReadAudit
     )
 }

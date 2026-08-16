@@ -1,7 +1,18 @@
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import { OutcomeUnknownError, apiRequest, readCookie, type CurrentPrincipal } from "./api";
-import { operationAllows, operationAuthority } from "./operation-authority";
+import { operationAllows, operationAuthority, type JsonSchema } from "./operation-authority";
+import {
+  candidateFromStates,
+  commandIsNonRepeatable,
+  deviceAuthorization,
+  hasFieldStateChanges,
+  optionalFieldPresenceLabel,
+  resolveSchemaVariant,
+  secretResult,
+  type FieldStates,
+} from "./schema-form";
 import {
   CONSOLE_ROUTES,
   buildPath,
@@ -12,6 +23,8 @@ import {
   routeHasCapability,
   routeOperationId,
 } from "./routes";
+import { OneTimeReveal, OutcomeUnknownState, SubmitBar } from "./ui";
+import { hourInput } from "./usage-pages";
 
 const seed: CurrentPrincipal = {
   principal: { kind: "seed_admin" },
@@ -195,7 +208,28 @@ describe("generated operation authority", () => {
       true,
     );
     expect(operationAuthority("me.sessions.revoke")?.required_scopes).toEqual(["management:write"]);
-    expect(operationAuthority("system.operations.usage_pipeline")).toBeNull();
+    expect(operationAuthority("system.operations.usage_pipeline")?.required_scopes).toEqual([
+      "management:operations",
+      "management:read",
+    ]);
+  });
+
+  it("projects every operations command and one-time Codex state-machine result", () => {
+    for (const operationId of [
+      "system.operations.runtime.reconcile",
+      "system.operations.coordination.recoveries.create",
+      "system.operations.coordination.activations.reconcile",
+      "system.operations.state_origins.cleanup",
+      "system.operations.upstream_credentials.reconcile",
+      "system.operations.target_health.probe",
+      "system.operations.usage_pipeline.flush",
+    ]) {
+      expect(operationAuthority(operationId), operationId).not.toBeNull();
+    }
+    const codexStart = operationAuthority("system.upstream_credentials.codex_login.start");
+    expect(codexStart?.idempotency).toBe("state_machine");
+    expect(codexStart?.one_time_secret_response).toBe(true);
+    expect(codexStart?.sensitive_result).toBe(true);
   });
 
   it("matches narrowed system-key reads and member self-service alternatives", () => {
@@ -266,6 +300,186 @@ describe("generated operation authority", () => {
       required_capability: "read_organization",
       condition: "local_member_self_service_policy",
     });
+  });
+});
+
+describe("schema command form states", () => {
+  it("describes optional-field opt-in actions without implying inverted preservation", () => {
+    expect(optionalFieldPresenceLabel(false)).toBe("Include this field");
+    expect(optionalFieldPresenceLabel(true)).toBe("Change this value");
+  });
+
+  it("distinguishes schema defaults from user edits", () => {
+    const baseline = {
+      budget: { enabled: true, clear: false, text: "{}", checked: false },
+      name: { enabled: true, clear: false, text: "", checked: false },
+    };
+    expect(hasFieldStateChanges(baseline, baseline)).toBe(false);
+    expect(
+      hasFieldStateChanges(baseline, {
+        ...baseline,
+        name: { ...baseline.name, text: "Production key" },
+      }),
+    ).toBe(true);
+    expect(
+      hasFieldStateChanges(baseline, {
+        ...baseline,
+        name: { ...baseline.name, text: "" },
+      }),
+    ).toBe(false);
+  });
+
+  it("resolves discriminated oneOf branches and never forwards a stale workload secret", () => {
+    const schema: JsonSchema = {
+      type: "object",
+      properties: {
+        credential_kind: {
+          type: "string",
+          enum: ["static_api_key", "aws_default_chain"],
+        },
+        secret_source_kind: { type: "string" },
+        injection_kind: { type: "string" },
+        secret: { type: ["string", "null"] },
+      },
+      required: ["credential_kind", "secret_source_kind", "injection_kind"],
+      oneOf: [
+        {
+          properties: {
+            credential_kind: { const: "static_api_key" },
+            secret_source_kind: { const: "encrypted_database" },
+            injection_kind: { const: "bearer" },
+            secret: { type: "string", minLength: 1 },
+          },
+          required: ["credential_kind", "secret_source_kind", "injection_kind", "secret"],
+        },
+        {
+          properties: {
+            credential_kind: { const: "aws_default_chain" },
+            secret_source_kind: { const: "workload_identity" },
+            injection_kind: { const: "aws_sigv4" },
+            secret: { type: "null" },
+          },
+          required: ["credential_kind", "secret_source_kind", "injection_kind"],
+        },
+      ],
+    };
+    const field = (text: string, enabled = true) => ({
+      enabled,
+      clear: false,
+      text,
+      checked: false,
+    });
+    const states: FieldStates = {
+      credential_kind: field("aws_default_chain"),
+      secret_source_kind: field("not-authoritative"),
+      injection_kind: field("not-authoritative"),
+      secret: field("must-not-be-forwarded"),
+    };
+    const effective = resolveSchemaVariant(schema, states);
+    expect(effective.properties?.secret?.type).toBe("null");
+    expect(candidateFromStates(effective, states)).toEqual({
+      credential_kind: "aws_default_chain",
+      secret_source_kind: "workload_identity",
+      injection_kind: "aws_sigv4",
+      secret: null,
+    });
+  });
+
+  it("extracts one-time Codex device codes without retaining them in metadata", () => {
+    const revealed = secretResult({
+      id: "session-1",
+      user_code: "ABCD-EFGH",
+      verification_url: "https://example.test/device",
+    });
+    expect(revealed).toEqual({
+      secret: "ABCD-EFGH",
+      metadata: {
+        id: "session-1",
+        verification_url: "https://example.test/device",
+      },
+    });
+    expect(
+      deviceAuthorization("system.upstream_credentials.codex_login.start", revealed!.metadata),
+    ).toEqual({ verificationUrl: "https://example.test/device" });
+    expect(
+      deviceAuthorization("system.upstream_credentials.codex_login.start", {
+        verification_url: "javascript:alert(1)",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("renders device authorization instructions instead of secret-storage instructions", () => {
+    const html = renderToStaticMarkup(
+      <OneTimeReveal
+        credentialClass="OpenAI Codex device code"
+        secret="ABCD-EFGH"
+        metadata={null}
+        doneHref="/session"
+        deviceAuthorization={{ verificationUrl: "https://example.test/device" }}
+      />,
+    );
+    expect(html).toContain("Open verification page");
+    expect(html).toContain("entered this one-time code");
+    expect(html).not.toContain("approved secret store");
+  });
+
+  it("uses state-aware outcome-unknown recovery guidance", () => {
+    const commandHtml = renderToStaticMarkup(
+      <OutcomeUnknownState
+        command="credential refresh"
+        requestId="request-1"
+        recoveryHref="/credential"
+      />,
+    );
+    expect(commandHtml).toContain("inspect current authoritative state");
+    expect(commandHtml).toContain("determine whether the command took effect");
+    expect(commandHtml).not.toContain("usable material that was never disclosed");
+
+    const secretHtml = renderToStaticMarkup(
+      <OutcomeUnknownState
+        command="key rotation"
+        requestId="request-2"
+        recoveryHref="/key"
+        oneTimeMaterial
+      />,
+    );
+    expect(secretHtml).toContain("usable material that was never disclosed");
+    expect(secretHtml).toContain("disable or revoke potentially undisclosed material");
+  });
+
+  it("treats destructive and state-machine commands as non-repeatable", () => {
+    expect(commandIsNonRepeatable({ destructive: true, idempotency: "not_applicable" })).toBe(true);
+    expect(commandIsNonRepeatable({ destructive: false, idempotency: "state_machine" })).toBe(true);
+    expect(commandIsNonRepeatable({ destructive: false, idempotency: "supported" })).toBe(false);
+    expect(commandIsNonRepeatable(operationAuthority("system.upstream_credentials.refresh")!)).toBe(
+      true,
+    );
+    expect(
+      commandIsNonRepeatable(operationAuthority("system.upstream_credentials.codex_login.cancel")!),
+    ).toBe(true);
+  });
+
+  it("keeps disabled confirmation actions distinct from active submissions", () => {
+    const html = renderToStaticMarkup(
+      <SubmitBar
+        submitting={false}
+        disabled
+        submitLabel="Create Gateway API key"
+        cancelHref="/organizations/org-1/gateway-api-keys"
+      />,
+    );
+    expect(html).toContain("Create Gateway API key");
+    expect(html).not.toContain("Working…");
+    expect(html).toContain("disabled");
+    expect(html).toContain('href="/organizations/org-1/gateway-api-keys"');
+  });
+});
+
+describe("usage range time-zone handling", () => {
+  it("preserves fractional local offsets for UTC hour boundaries", () => {
+    const utcHour = new Date("2026-01-01T00:00:00.000Z");
+    expect(hourInput(utcHour, -330)).toBe("2026-01-01T05:30");
+    expect(hourInput(utcHour, -345)).toBe("2026-01-01T05:45");
   });
 });
 
@@ -344,12 +558,16 @@ describe("browser secret handling helpers", () => {
     vi.unstubAllGlobals();
   });
 
-  it("does not register personal API-key or unimplemented Module II routes", () => {
+  it("registers Module II in qualified contexts without personal API-key management", () => {
     const paths = CONSOLE_ROUTES.map((route) => route.path).join("\n");
     expect(paths).not.toContain("/profile/api-keys");
-    expect(paths).not.toContain("gateway-api-keys");
-    expect(paths).not.toContain("upstream-credentials");
-    expect(paths).not.toContain("model-routes");
-    expect(paths).not.toContain("usage-pipeline");
+    expect(paths).toContain("/organizations/{organization_id}/gateway-api-keys");
+    expect(paths).toContain("/organizations/{organization_id}/upstream-credentials");
+    expect(paths).toContain("/organizations/{organization_id}/model-routes");
+    expect(paths).toContain("/admin/catalog/credentials");
+    expect(paths).toContain("/admin/usage");
+    expect(paths).toContain("/admin/operations/coordination/recoveries");
+    expect(paths).toContain("/admin/operations/target-health");
+    expect(paths).toContain("/admin/operations/usage-pipeline");
   });
 });

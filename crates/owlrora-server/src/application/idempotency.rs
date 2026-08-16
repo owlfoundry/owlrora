@@ -1,8 +1,11 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use hkdf::Hkdf;
 use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use sqlx::{Postgres, Row as _, Transaction, postgres::PgRow};
+use subtle::ConstantTimeEq as _;
+use zeroize::Zeroize as _;
 
 use crate::domain::{Actor, ResourceScope};
 
@@ -39,6 +42,35 @@ pub(crate) enum IdempotencyDecision {
 }
 
 impl Application {
+    pub(crate) async fn begin_secret_idempotent_command<T: Serialize>(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        identity: &RequestIdentity,
+        scope: &ResourceScope,
+        operation_id: &str,
+        idempotency_key: Option<&str>,
+        request: &T,
+    ) -> Result<IdempotencyDecision, ApplicationError> {
+        let Some(idempotency_key) = idempotency_key else {
+            return Ok(IdempotencyDecision::Execute(None));
+        };
+        let mut key = self
+            .secrets
+            .derive_idempotency_mac_key(self.store.installation_id())
+            .map_err(|_| ApplicationError::Internal)?;
+        let result = begin_idempotent_command_with_fingerprint(
+            transaction,
+            identity,
+            scope,
+            operation_id,
+            idempotency_key,
+            keyed_request_fingerprint(&key, request)?,
+        )
+        .await;
+        key.zeroize();
+        result
+    }
+
     pub(crate) async fn begin_idempotent_command<T: Serialize>(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
@@ -51,39 +83,42 @@ impl Application {
         let Some(idempotency_key) = idempotency_key else {
             return Ok(IdempotencyDecision::Execute(None));
         };
-        let handle = idempotency_handle(identity, scope, operation_id, idempotency_key, request)?;
-        let inserted = sqlx::query(
-            "INSERT INTO idempotency_records(
-                actor_fingerprint, scope_fingerprint, operation_id, idempotency_key,
-                request_fingerprint, state, expires_at
-             ) VALUES ($1,$2,$3,$4,$5,'in_progress',now()+make_interval(hours => $6))
-             ON CONFLICT DO NOTHING",
+        let request_bytes = serde_json::to_vec(request).map_err(|_| ApplicationError::Internal)?;
+        begin_idempotent_command_with_fingerprint(
+            transaction,
+            identity,
+            scope,
+            operation_id,
+            idempotency_key,
+            fingerprint(b"owlrora:idempotency:request:v1\0", &request_bytes),
         )
-        .bind(&handle.actor_fingerprint)
-        .bind(&handle.scope_fingerprint)
-        .bind(&handle.operation_id)
-        .bind(&handle.idempotency_key)
-        .bind(handle.request_fingerprint.to_vec())
-        .bind(i32::try_from(IDEMPOTENCY_TTL_HOURS).map_err(|_| ApplicationError::Internal)?)
-        .execute(&mut **transaction)
-        .await?
-        .rows_affected();
-        if inserted == 1 {
-            return Ok(IdempotencyDecision::Execute(Some(handle)));
-        }
-        let row = sqlx::query(
-            "SELECT request_fingerprint, state, response_status, response_body
-             FROM idempotency_records
-             WHERE actor_fingerprint=$1 AND scope_fingerprint=$2
-               AND operation_id=$3 AND idempotency_key=$4",
-        )
-        .bind(&handle.actor_fingerprint)
-        .bind(&handle.scope_fingerprint)
-        .bind(&handle.operation_id)
-        .bind(&handle.idempotency_key)
-        .fetch_one(&mut **transaction)
-        .await?;
-        Ok(IdempotencyDecision::Replay(replay_from_row(&row, &handle)?))
+        .await
+    }
+
+    pub(crate) async fn replay_completed_secret_idempotent_command<T: Serialize>(
+        &self,
+        identity: &RequestIdentity,
+        scope: &ResourceScope,
+        operation_id: &str,
+        idempotency_key: Option<&str>,
+        request: &T,
+    ) -> Result<Option<IdempotencyReplay>, ApplicationError> {
+        let Some(idempotency_key) = idempotency_key else {
+            return Ok(None);
+        };
+        let mut key = self
+            .secrets
+            .derive_idempotency_mac_key(self.store.installation_id())
+            .map_err(|_| ApplicationError::Internal)?;
+        let handle = idempotency_handle_with_fingerprint(
+            identity,
+            scope,
+            operation_id,
+            idempotency_key,
+            keyed_request_fingerprint(&key, request)?,
+        )?;
+        key.zeroize();
+        self.load_completed_idempotency_replay(handle).await
     }
 
     pub(crate) async fn replay_completed_idempotent_command<T: Serialize>(
@@ -98,6 +133,13 @@ impl Application {
             return Ok(None);
         };
         let handle = idempotency_handle(identity, scope, operation_id, idempotency_key, request)?;
+        self.load_completed_idempotency_replay(handle).await
+    }
+
+    async fn load_completed_idempotency_replay(
+        &self,
+        handle: IdempotencyHandle,
+    ) -> Result<Option<IdempotencyReplay>, ApplicationError> {
         let row = sqlx::query(
             "SELECT request_fingerprint, state, response_status, response_body
              FROM idempotency_records
@@ -113,9 +155,10 @@ impl Application {
         let Some(row) = row else {
             return Ok(None);
         };
-        if row.try_get::<Vec<u8>, _>("request_fingerprint")?
-            != handle.request_fingerprint.as_slice()
-        {
+        if !fingerprints_match(
+            &row.try_get::<Vec<u8>, _>("request_fingerprint")?,
+            &handle.request_fingerprint,
+        ) {
             return Err(ApplicationError::IdempotencyConflict);
         }
         if row.try_get::<String, _>("state")? != "completed" {
@@ -195,14 +238,30 @@ fn idempotency_handle<T: Serialize>(
     idempotency_key: &str,
     request: &T,
 ) -> Result<IdempotencyHandle, ApplicationError> {
+    let request_bytes = serde_json::to_vec(request).map_err(|_| ApplicationError::Internal)?;
+    let request_fingerprint = fingerprint(b"owlrora:idempotency:request:v1\0", &request_bytes);
+    idempotency_handle_with_fingerprint(
+        identity,
+        scope,
+        operation_id,
+        idempotency_key,
+        request_fingerprint,
+    )
+}
+
+fn idempotency_handle_with_fingerprint(
+    identity: &RequestIdentity,
+    scope: &ResourceScope,
+    operation_id: &str,
+    idempotency_key: &str,
+    request_fingerprint: [u8; 32],
+) -> Result<IdempotencyHandle, ApplicationError> {
     validate_idempotency_key(idempotency_key)?;
     let actor = serde_json::to_vec(&Actor::from(&identity.principal))
         .map_err(|_| ApplicationError::Internal)?;
     let actor_fingerprint = fingerprint_text(b"owlrora:idempotency:actor:v1\0", &actor);
     let scope_bytes = serde_json::to_vec(scope).map_err(|_| ApplicationError::Internal)?;
     let scope_fingerprint = fingerprint_text(b"owlrora:idempotency:scope:v1\0", &scope_bytes);
-    let request_bytes = serde_json::to_vec(request).map_err(|_| ApplicationError::Internal)?;
-    let request_fingerprint = fingerprint(b"owlrora:idempotency:request:v1\0", &request_bytes);
     Ok(IdempotencyHandle {
         actor_fingerprint,
         scope_fingerprint,
@@ -212,11 +271,63 @@ fn idempotency_handle<T: Serialize>(
     })
 }
 
+async fn begin_idempotent_command_with_fingerprint(
+    transaction: &mut Transaction<'_, Postgres>,
+    identity: &RequestIdentity,
+    scope: &ResourceScope,
+    operation_id: &str,
+    idempotency_key: &str,
+    request_fingerprint: [u8; 32],
+) -> Result<IdempotencyDecision, ApplicationError> {
+    let handle = idempotency_handle_with_fingerprint(
+        identity,
+        scope,
+        operation_id,
+        idempotency_key,
+        request_fingerprint,
+    )?;
+    let inserted = sqlx::query(
+        "INSERT INTO idempotency_records(
+            actor_fingerprint, scope_fingerprint, operation_id, idempotency_key,
+            request_fingerprint, state, expires_at
+         ) VALUES ($1,$2,$3,$4,$5,'in_progress',now()+make_interval(hours => $6))
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(&handle.actor_fingerprint)
+    .bind(&handle.scope_fingerprint)
+    .bind(&handle.operation_id)
+    .bind(&handle.idempotency_key)
+    .bind(handle.request_fingerprint.to_vec())
+    .bind(i32::try_from(IDEMPOTENCY_TTL_HOURS).map_err(|_| ApplicationError::Internal)?)
+    .execute(&mut **transaction)
+    .await?
+    .rows_affected();
+    if inserted == 1 {
+        return Ok(IdempotencyDecision::Execute(Some(handle)));
+    }
+    let row = sqlx::query(
+        "SELECT request_fingerprint, state, response_status, response_body
+         FROM idempotency_records
+         WHERE actor_fingerprint=$1 AND scope_fingerprint=$2
+           AND operation_id=$3 AND idempotency_key=$4",
+    )
+    .bind(&handle.actor_fingerprint)
+    .bind(&handle.scope_fingerprint)
+    .bind(&handle.operation_id)
+    .bind(&handle.idempotency_key)
+    .fetch_one(&mut **transaction)
+    .await?;
+    Ok(IdempotencyDecision::Replay(replay_from_row(&row, &handle)?))
+}
+
 fn replay_from_row(
     row: &PgRow,
     handle: &IdempotencyHandle,
 ) -> Result<IdempotencyReplay, ApplicationError> {
-    if row.try_get::<Vec<u8>, _>("request_fingerprint")? != handle.request_fingerprint.as_slice() {
+    if !fingerprints_match(
+        &row.try_get::<Vec<u8>, _>("request_fingerprint")?,
+        &handle.request_fingerprint,
+    ) {
         return Err(ApplicationError::IdempotencyConflict);
     }
     if row.try_get::<String, _>("state")? != "completed" {
@@ -256,6 +367,21 @@ fn validate_idempotency_key(value: &str) -> Result<(), ApplicationError> {
     Ok(())
 }
 
+fn keyed_request_fingerprint<T: Serialize>(
+    key: &[u8; 32],
+    request: &T,
+) -> Result<[u8; 32], ApplicationError> {
+    let canonical = serde_json::to_vec(request).map_err(|_| ApplicationError::Internal)?;
+    // HKDF-Extract with a secret salt is an HMAC-SHA-256 PRF over the canonical input.
+    // This stores no offline-verifiable digest of the write-only secret.
+    let (mac, _) = Hkdf::<Sha256>::extract(Some(key), &canonical);
+    Ok(mac.into())
+}
+
+fn fingerprints_match(stored: &[u8], expected: &[u8; 32]) -> bool {
+    stored.len() == expected.len() && bool::from(stored.ct_eq(expected.as_slice()))
+}
+
 fn fingerprint(domain: &[u8], value: &[u8]) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(domain);
@@ -280,5 +406,10 @@ mod tests {
             fingerprint(b"domain-a\0", b"same"),
             fingerprint(b"domain-b\0", b"same")
         );
+        let first = keyed_request_fingerprint(&[1; 32], &json!({"secret":"value"})).unwrap();
+        let second = keyed_request_fingerprint(&[2; 32], &json!({"secret":"value"})).unwrap();
+        assert_ne!(first, second);
+        assert!(fingerprints_match(&first, &first));
+        assert!(!fingerprints_match(&first, &second));
     }
 }

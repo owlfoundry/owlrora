@@ -113,6 +113,8 @@ export interface Membership {
   role: OrganizationRole;
   status: string;
   llm_scope_ceiling: string[];
+  llm_capability_ceiling: string[];
+  llm_route_ceiling: JsonValue;
   created_at: string;
   updated_at: string;
 }
@@ -123,6 +125,8 @@ export interface Invitation {
   intended_email: string | null;
   intended_role: OrganizationRole;
   llm_scope_ceiling: string[];
+  llm_capability_ceiling: string[];
+  llm_route_ceiling: JsonValue;
   state: string;
   expires_at: string;
   accepted_by_user_id: string | null;
@@ -191,7 +195,10 @@ export interface ExternalIdentityIssuer {
   claim_mapping: JsonValue;
   jwt_capability_ceiling: string[];
   management_scope_ceiling: ManagementScope[];
+  management_capability_ceiling: string[];
   management_organization_ceiling: JsonValue;
+  llm_scope_ceiling: string[];
+  llm_capability_ceiling: string[];
   capability_claim_policy: "ignore" | "optional_narrowing" | "required_narrowing";
   jwt_route_ceiling: JsonValue;
   organization_selector: JsonValue;

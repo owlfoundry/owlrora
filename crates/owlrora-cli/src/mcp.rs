@@ -140,7 +140,7 @@ fn visible(operation: &Operation, options: &McpOptions) -> bool {
     };
     options.toolsets.contains(toolset)
         && (operation.mode == OperationMode::Query || options.allow_write)
-        && (!operation.secret_input || options.allow_secret_inputs)
+        && (operation.secret_input.is_none() || options.allow_secret_inputs)
         && (!operation.sensitive_result || options.allow_sensitive_results)
 }
 
@@ -160,14 +160,10 @@ fn tool_definition(operation: &Operation) -> Value {
         required.push(parameter);
     }
     for parameter in operation.query_parameters() {
-        properties.insert(
-            (*parameter).to_owned(),
-            if *parameter == "limit" {
-                json!({"type":"integer","minimum":1,"maximum":200})
-            } else {
-                json!({"type":"string","maxLength":2048})
-            },
-        );
+        properties.insert(parameter.name.clone(), parameter.schema.clone());
+        if parameter.required {
+            required.push(parameter.name.clone());
+        }
     }
     if let Some(request_schema) = &operation.request_schema {
         let mut request_schema = request_schema.clone();
@@ -230,7 +226,13 @@ fn tool_definition(operation: &Operation) -> Value {
             "owlrora/toolset":operation.mcp_toolset,
             "owlrora/highImpact":operation.high_impact,
             "owlrora/approvalRecommended":operation.approval_recommended,
-            "owlrora/secretInput":operation.secret_input,
+            "owlrora/secretInput":operation.secret_input.as_ref().map(|input| json!({
+                "field":input.field,
+                "mode":match input.mode {
+                    crate::contract::SecretInputMode::ReplaceBody => "replace_body",
+                    crate::contract::SecretInputMode::MergeIntoCandidate => "merge_into_candidate",
+                }
+            })),
             "owlrora/sensitiveResult":operation.sensitive_result,
             "owlrora/nonRepeatable":operation.one_time_secret_response
         }
@@ -314,7 +316,7 @@ fn invocation_from_arguments(
     allowed.extend(
         query_parameters
             .iter()
-            .map(|parameter| (*parameter).to_owned()),
+            .map(|parameter| parameter.name.clone()),
     );
     if operation.accepts_body() {
         allowed.insert("body".to_owned());
@@ -339,21 +341,24 @@ fn invocation_from_arguments(
             .insert(parameter, value.to_owned());
     }
     for parameter in query_parameters {
-        if let Some(value) = arguments.get(*parameter) {
-            let value = if *parameter == "limit" {
-                value
-                    .as_u64()
-                    .filter(|limit| (1..=200).contains(limit))
-                    .ok_or_else(|| "limit must be an integer from 1 through 200".to_owned())?
-                    .to_string()
-            } else {
-                value
-                    .as_str()
-                    .ok_or_else(|| format!("{parameter} must be a string"))?
-                    .to_owned()
-            };
-            invocation.query.insert((*parameter).to_owned(), value);
-        }
+        let Some(value) = arguments.get(&parameter.name) else {
+            if parameter.required {
+                return Err(format!("missing argument {:?}", parameter.name));
+            }
+            continue;
+        };
+        let value = if parameter.is_integer() {
+            value
+                .as_u64()
+                .ok_or_else(|| format!("{} must be a non-negative integer", parameter.name))?
+                .to_string()
+        } else {
+            value
+                .as_str()
+                .ok_or_else(|| format!("{} must be a string", parameter.name))?
+                .to_owned()
+        };
+        invocation.query.insert(parameter.name.clone(), value);
     }
     if operation.accepts_body() {
         let body = arguments
@@ -369,7 +374,12 @@ fn invocation_from_arguments(
     invocation.idempotency_key = arguments
         .get("idempotency_key")
         .and_then(Value::as_str)
-        .map(str::to_owned);
+        .map(str::to_owned)
+        .or_else(|| {
+            operation
+                .client_generated_idempotency_key
+                .then(|| uuid::Uuid::now_v7().to_string())
+        });
     Ok(invocation)
 }
 
@@ -478,6 +488,34 @@ mod tests {
     }
 
     #[test]
+    fn tool_annotations_only_mark_queries_as_idempotent() {
+        let query = operations()
+            .iter()
+            .find(|operation| operation.id == "system.users.get")
+            .unwrap();
+        let supported = operations()
+            .iter()
+            .find(|operation| operation.id == "system.users.create")
+            .unwrap();
+        let state_machine = operations()
+            .iter()
+            .find(|operation| operation.id == "system.upstream_credentials.codex_login.start")
+            .unwrap();
+        assert_eq!(
+            tool_definition(query)["annotations"]["idempotentHint"],
+            true
+        );
+        assert_eq!(
+            tool_definition(supported)["annotations"]["idempotentHint"],
+            false
+        );
+        assert_eq!(
+            tool_definition(state_machine)["annotations"]["idempotentHint"],
+            false
+        );
+    }
+
+    #[test]
     fn management_key_capability_ceilings_are_exact_string_arrays() {
         for operation_id in [
             "system.management_keys.create",
@@ -499,6 +537,56 @@ mod tests {
             );
             assert_eq!(capability_ceiling["uniqueItems"], true, "{operation_id}");
         }
+    }
+
+    #[test]
+    fn usage_tools_expose_and_forward_typed_required_query_parameters() {
+        let operation = operations()
+            .iter()
+            .find(|operation| operation.id == "system.usage.breakdown")
+            .unwrap();
+        let definition = tool_definition(operation);
+        let schema = &definition["inputSchema"];
+        assert_eq!(schema["properties"]["start"]["format"], "date-time");
+        assert_eq!(schema["properties"]["limit"]["maximum"], 100);
+        for required in ["start", "end", "fact_family", "dimension"] {
+            assert!(
+                schema["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(required))
+            );
+        }
+        let arguments = serde_json::from_value::<Map<String, Value>>(json!({
+            "start":"2026-01-01T00:00:00Z",
+            "end":"2026-01-02T00:00:00Z",
+            "fact_family":"attempts",
+            "dimension":"origin",
+            "limit":20
+        }))
+        .unwrap();
+        let invocation = invocation_from_arguments(operation, &arguments).unwrap();
+        assert_eq!(
+            invocation.query.get("fact_family"),
+            Some(&"attempts".to_owned())
+        );
+        assert_eq!(invocation.query.get("limit"), Some(&"20".to_owned()));
+    }
+
+    #[test]
+    fn secret_replacement_invocations_generate_one_stable_retry_key() {
+        let operation = operations()
+            .iter()
+            .find(|operation| operation.id == "system.upstream_credentials.replace_secret")
+            .unwrap();
+        let arguments = serde_json::from_value::<Map<String, Value>>(json!({
+            "credential_id":"credential-1",
+            "body":{"secret":"protected"}
+        }))
+        .unwrap();
+        let invocation = invocation_from_arguments(operation, &arguments).unwrap();
+        assert!(invocation.idempotency_key.is_some());
+        assert_eq!(invocation.body, Some(json!({"secret":"protected"})));
     }
 
     #[test]

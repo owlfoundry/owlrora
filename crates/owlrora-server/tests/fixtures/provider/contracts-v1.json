@@ -1,0 +1,723 @@
+{
+  "cases": [
+    {
+      "name": "anthropic_messages_native",
+      "request": {
+        "headers": {
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+          "x-api-key": "fixture-secret",
+          "x-request-id": "request-fixture"
+        },
+        "json": {
+          "max_tokens": 32,
+          "messages": [
+            {
+              "content": [
+                {
+                  "text": "Return the string fixture-ok.",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ],
+          "model": "fixture-model",
+          "stream": false
+        },
+        "method": "POST",
+        "path_and_query": "/v1/messages"
+      },
+      "response": {
+        "headers": {
+          "content-type": "application/json"
+        },
+        "json": {
+          "content": [
+            {
+              "text": "fixture-ok",
+              "type": "text"
+            }
+          ],
+          "id": "msg_fixture",
+          "model": "fixture-model",
+          "role": "assistant",
+          "stop_reason": "end_turn",
+          "stop_sequence": null,
+          "type": "message",
+          "usage": {
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "input_tokens": 12,
+            "output_tokens": 4
+          }
+        },
+        "status": 200
+      },
+      "source_cassette": "anthropic-official-simple_chat.yaml",
+      "stream": {
+        "chunks": [
+          "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_fixture\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"fixture-model\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":12,\"output_tokens\":0}}}\n\n",
+          "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"fixture-ok\"}}\n\n",
+          "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+          "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":4}}\n\n",
+          "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+        ],
+        "framing": "sse"
+      },
+      "transport": "anthropic_messages_native"
+    },
+    {
+      "name": "anthropic_messages_bedrock",
+      "request": {
+        "headers": {
+          "authorization": "AWS4-HMAC-SHA256 fixture",
+          "content-type": "application/json",
+          "x-amz-content-sha256": "fixture-sha256",
+          "x-amz-date": "20240101T000000Z",
+          "x-request-id": "request-fixture"
+        },
+        "json": {
+          "anthropic_version": "bedrock-2023-05-31",
+          "max_tokens": 32,
+          "messages": [
+            {
+              "content": [
+                {
+                  "text": "Return the string fixture-ok.",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ]
+        },
+        "method": "POST",
+        "path_and_query": "/model/fixture-model/invoke"
+      },
+      "response": {
+        "headers": {
+          "content-type": "application/json"
+        },
+        "json": {
+          "content": [
+            {
+              "text": "fixture-ok",
+              "type": "text"
+            }
+          ],
+          "id": "msg_fixture",
+          "model": "fixture-model",
+          "role": "assistant",
+          "stop_reason": "end_turn",
+          "stop_sequence": null,
+          "type": "message",
+          "usage": {
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "input_tokens": 12,
+            "output_tokens": 4
+          }
+        },
+        "status": 200
+      },
+      "source_cassette": "anthropic-bedrock-simple_chat.yaml",
+      "stream": {
+        "chunks": [
+          "AAABhwAAAEtMtvhWDTptZXNzYWdlLXR5cGUHAAVldmVudAs6ZXZlbnQtdHlwZQcABWNodW5rDTpjb250ZW50LXR5cGUHABBhcHBsaWNhdGlvbi9qc29ueyJieXRlcyI6ImV5SjBlWEJsSWpvaWJXVnpjMkZuWlY5emRHRnlkQ0lzSW0xbGMzTmhaMlVpT25zaWFXUWlPaUp0YzJkZlptbDRkSFZ5WlNJc0luUjVjR1VpT2lKdFpYTnpZV2RsSWl3aWNtOXNaU0k2SW1GemMybHpkR0Z1ZENJc0ltMXZaR1ZzSWpvaVptbDRkSFZ5WlMxdGIyUmxiQ0lzSW1OdmJuUmxiblFpT2x0ZExDSnpkRzl3WDNKbFlYTnZiaUk2Ym5Wc2JDd2ljM1J2Y0Y5elpYRjFaVzVqWlNJNmJuVnNiQ3dpZFhOaFoyVWlPbnNpYVc1d2RYUmZkRzlyWlc1eklqb3hNaXdpYjNWMGNIVjBYM1J2YTJWdWN5STZNSDE5ZlE9PSJ9Jrqxtw==",
+          "AAAA1wAAAEu/+eQ4DTptZXNzYWdlLXR5cGUHAAVldmVudAs6ZXZlbnQtdHlwZQcABWNodW5rDTpjb250ZW50LXR5cGUHABBhcHBsaWNhdGlvbi9qc29ueyJieXRlcyI6ImV5SjBlWEJsSWpvaVkyOXVkR1Z1ZEY5aWJHOWphMTl6ZEdGeWRDSXNJbWx1WkdWNElqb3dMQ0pqYjI1MFpXNTBYMkpzYjJOcklqcDdJblI1Y0dVaU9pSjBaWGgwSWl3aWRHVjRkQ0k2SWlKOWZRPT0ifZNxINU=",
+          "AAAA3wAAAEuPia/5DTptZXNzYWdlLXR5cGUHAAVldmVudAs6ZXZlbnQtdHlwZQcABWNodW5rDTpjb250ZW50LXR5cGUHABBhcHBsaWNhdGlvbi9qc29ueyJieXRlcyI6ImV5SjBlWEJsSWpvaVkyOXVkR1Z1ZEY5aWJHOWphMTlrWld4MFlTSXNJbWx1WkdWNElqb3dMQ0prWld4MFlTSTZleUowZVhCbElqb2lkR1Y0ZEY5a1pXeDBZU0lzSW5SbGVIUWlPaUptYVhoMGRYSmxMVzlySW4xOSJ9IEd7Bw==",
+          "AAAAmwAAAEsi+lFwDTptZXNzYWdlLXR5cGUHAAVldmVudAs6ZXZlbnQtdHlwZQcABWNodW5rDTpjb250ZW50LXR5cGUHABBhcHBsaWNhdGlvbi9qc29ueyJieXRlcyI6ImV5SjBlWEJsSWpvaVkyOXVkR1Z1ZEY5aWJHOWphMTl6ZEc5d0lpd2lhVzVrWlhnaU9qQjkifb5+soo=",
+          "AAAA9wAAAEt+OMs8DTptZXNzYWdlLXR5cGUHAAVldmVudAs6ZXZlbnQtdHlwZQcABWNodW5rDTpjb250ZW50LXR5cGUHABBhcHBsaWNhdGlvbi9qc29ueyJieXRlcyI6ImV5SjBlWEJsSWpvaWJXVnpjMkZuWlY5a1pXeDBZU0lzSW1SbGJIUmhJanA3SW5OMGIzQmZjbVZoYzI5dUlqb2laVzVrWDNSMWNtNGlMQ0p6ZEc5d1gzTmxjWFZsYm1ObElqcHVkV3hzZlN3aWRYTmhaMlVpT25zaWIzVjBjSFYwWDNSdmEyVnVjeUk2TkgxOSJ9mQzE6g==",
+          "AAAAhwAAAEuH6ivzDTptZXNzYWdlLXR5cGUHAAVldmVudAs6ZXZlbnQtdHlwZQcABWNodW5rDTpjb250ZW50LXR5cGUHABBhcHBsaWNhdGlvbi9qc29ueyJieXRlcyI6ImV5SjBlWEJsSWpvaWJXVnpjMkZuWlY5emRHOXdJbjA9In1YpN0u"
+        ],
+        "framing": "aws_event_stream_base64"
+      },
+      "transport": "anthropic_messages_bedrock"
+    },
+    {
+      "name": "anthropic_messages_vertex",
+      "request": {
+        "headers": {
+          "authorization": "Bearer fixture-token",
+          "content-type": "application/json",
+          "x-request-id": "request-fixture"
+        },
+        "json": {
+          "anthropic_version": "vertex-2023-10-16",
+          "max_tokens": 32,
+          "messages": [
+            {
+              "content": [
+                {
+                  "text": "Return the string fixture-ok.",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ],
+          "stream": false
+        },
+        "method": "POST",
+        "path_and_query": "/v1/projects/fixture-project/locations/fixture-region/publishers/anthropic/models/fixture-model:rawPredict"
+      },
+      "response": {
+        "headers": {
+          "content-type": "application/json"
+        },
+        "json": {
+          "content": [
+            {
+              "text": "fixture-ok",
+              "type": "text"
+            }
+          ],
+          "id": "msg_fixture",
+          "model": "fixture-model",
+          "role": "assistant",
+          "stop_reason": "end_turn",
+          "stop_sequence": null,
+          "type": "message",
+          "usage": {
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "input_tokens": 12,
+            "output_tokens": 4
+          }
+        },
+        "status": 200
+      },
+      "source_cassette": "anthropic-vertex-simple_chat.yaml",
+      "stream": {
+        "chunks": [
+          "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_fixture\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"fixture-model\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":12,\"output_tokens\":0}}}\n\n",
+          "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"fixture-ok\"}}\n\n",
+          "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+          "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":4}}\n\n",
+          "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+        ],
+        "framing": "sse"
+      },
+      "transport": "anthropic_messages_vertex"
+    },
+    {
+      "name": "openai_chat_completions",
+      "request": {
+        "headers": {
+          "authorization": "Bearer fixture-secret",
+          "content-type": "application/json",
+          "x-request-id": "request-fixture"
+        },
+        "json": {
+          "max_tokens": 32,
+          "messages": [
+            {
+              "content": "Return the string fixture-ok.",
+              "role": "user"
+            }
+          ],
+          "model": "fixture-model",
+          "stream": false
+        },
+        "method": "POST",
+        "path_and_query": "/v1/chat/completions"
+      },
+      "response": {
+        "headers": {
+          "content-type": "application/json"
+        },
+        "json": {
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "index": 0,
+              "message": {
+                "content": "fixture-ok",
+                "role": "assistant"
+              }
+            }
+          ],
+          "created": 1700000000,
+          "id": "chatcmpl_fixture",
+          "model": "fixture-model",
+          "object": "chat.completion",
+          "usage": {
+            "completion_tokens": 4,
+            "completion_tokens_details": {
+              "reasoning_tokens": 1
+            },
+            "prompt_tokens": 12,
+            "prompt_tokens_details": {
+              "cached_tokens": 2
+            },
+            "total_tokens": 16
+          }
+        },
+        "status": 200
+      },
+      "source_cassette": "openai-official-simple_chat.yaml",
+      "stream": {
+        "chunks": [
+          "data: {\"id\":\"chatcmpl_fixture\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"fixture-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n",
+          "data: {\"id\":\"chatcmpl_fixture\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"fixture-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"fixture-ok\"},\"finish_reason\":null}]}\n\n",
+          "data: {\"id\":\"chatcmpl_fixture\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"fixture-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+          "data: {\"id\":\"chatcmpl_fixture\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"fixture-model\",\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":4,\"total_tokens\":16,\"prompt_tokens_details\":{\"cached_tokens\":2},\"completion_tokens_details\":{\"reasoning_tokens\":1}}}\n\n",
+          "data: [DONE]\n\n"
+        ],
+        "framing": "sse"
+      },
+      "transport": "openai_chat_completions"
+    },
+    {
+      "name": "openai_responses_http",
+      "request": {
+        "headers": {
+          "authorization": "Bearer fixture-secret",
+          "content-type": "application/json",
+          "x-request-id": "request-fixture"
+        },
+        "json": {
+          "input": "Return the string fixture-ok.",
+          "max_output_tokens": 32,
+          "model": "fixture-model",
+          "stream": false
+        },
+        "method": "POST",
+        "path_and_query": "/v1/responses"
+      },
+      "response": {
+        "headers": {
+          "content-type": "application/json"
+        },
+        "json": {
+          "created_at": 1700000000,
+          "id": "resp_fixture",
+          "model": "fixture-model",
+          "object": "response",
+          "output": [
+            {
+              "content": [
+                {
+                  "annotations": [],
+                  "text": "fixture-ok",
+                  "type": "output_text"
+                }
+              ],
+              "id": "msg_fixture",
+              "role": "assistant",
+              "status": "completed",
+              "type": "message"
+            }
+          ],
+          "status": "completed",
+          "usage": {
+            "input_tokens": 12,
+            "input_tokens_details": {
+              "cached_tokens": 2
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 1
+            },
+            "total_tokens": 17
+          }
+        },
+        "status": 200
+      },
+      "source_cassette": "openai-official-responses_simple.yaml",
+      "stream": {
+        "chunks": [
+          "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_fixture\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"in_progress\",\"model\":\"fixture-model\",\"output\":[],\"usage\":null}}\n\n",
+          "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":0,\"item\":{\"id\":\"msg_fixture\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}\n\n",
+          "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":2,\"item_id\":\"msg_fixture\",\"output_index\":0,\"content_index\":0,\"delta\":\"fixture-ok\"}\n\n",
+          "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":3,\"response\":{\"id\":\"resp_fixture\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"completed\",\"model\":\"fixture-model\",\"output\":[{\"id\":\"msg_fixture\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"fixture-ok\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":12,\"output_tokens\":5,\"total_tokens\":17,\"input_tokens_details\":{\"cached_tokens\":2},\"output_tokens_details\":{\"reasoning_tokens\":1}}}}\n\n",
+          "data: [DONE]\n\n"
+        ],
+        "framing": "sse"
+      },
+      "transport": "openai_responses_http"
+    },
+    {
+      "name": "openai_codex_responses",
+      "request": {
+        "headers": {
+          "authorization": "Bearer fixture-token",
+          "chatgpt-account-id": "fixture-account",
+          "content-type": "application/json",
+          "x-request-id": "request-fixture"
+        },
+        "json": {
+          "input": "Return the string fixture-ok.",
+          "instructions": "",
+          "model": "fixture-model",
+          "stream": false
+        },
+        "method": "POST",
+        "path_and_query": "/backend-api/codex/responses"
+      },
+      "response": {
+        "headers": {
+          "content-type": "application/json"
+        },
+        "json": {
+          "created_at": 1700000000,
+          "id": "resp_fixture",
+          "model": "fixture-model",
+          "object": "response",
+          "output": [
+            {
+              "content": [
+                {
+                  "annotations": [],
+                  "text": "fixture-ok",
+                  "type": "output_text"
+                }
+              ],
+              "id": "msg_fixture",
+              "role": "assistant",
+              "status": "completed",
+              "type": "message"
+            }
+          ],
+          "status": "completed",
+          "usage": {
+            "input_tokens": 12,
+            "input_tokens_details": {
+              "cached_tokens": 2
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 1
+            },
+            "total_tokens": 17
+          }
+        },
+        "status": 200
+      },
+      "source_cassette": "openai-official-responses_simple.yaml",
+      "stream": {
+        "chunks": [
+          "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_fixture\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"in_progress\",\"model\":\"fixture-model\",\"output\":[],\"usage\":null}}\n\n",
+          "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":0,\"item\":{\"id\":\"msg_fixture\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}\n\n",
+          "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":2,\"item_id\":\"msg_fixture\",\"output_index\":0,\"content_index\":0,\"delta\":\"fixture-ok\"}\n\n",
+          "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":3,\"response\":{\"id\":\"resp_fixture\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"completed\",\"model\":\"fixture-model\",\"output\":[{\"id\":\"msg_fixture\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"fixture-ok\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":12,\"output_tokens\":5,\"total_tokens\":17,\"input_tokens_details\":{\"cached_tokens\":2},\"output_tokens_details\":{\"reasoning_tokens\":1}}}}\n\n",
+          "data: [DONE]\n\n"
+        ],
+        "framing": "sse"
+      },
+      "transport": "openai_codex_responses"
+    },
+    {
+      "name": "azure_openai_chat_completions",
+      "request": {
+        "headers": {
+          "api-key": "fixture-secret",
+          "content-type": "application/json",
+          "x-request-id": "request-fixture"
+        },
+        "json": {
+          "max_tokens": 32,
+          "messages": [
+            {
+              "content": "Return the string fixture-ok.",
+              "role": "user"
+            }
+          ],
+          "model": "fixture-model",
+          "stream": false
+        },
+        "method": "POST",
+        "path_and_query": "/openai/deployments/fixture-model/chat/completions?api-version=fixture-version"
+      },
+      "response": {
+        "headers": {
+          "content-type": "application/json"
+        },
+        "json": {
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "index": 0,
+              "message": {
+                "content": "fixture-ok",
+                "role": "assistant"
+              }
+            }
+          ],
+          "created": 1700000000,
+          "id": "chatcmpl_fixture",
+          "model": "fixture-model",
+          "object": "chat.completion",
+          "usage": {
+            "completion_tokens": 4,
+            "completion_tokens_details": {
+              "reasoning_tokens": 1
+            },
+            "prompt_tokens": 12,
+            "prompt_tokens_details": {
+              "cached_tokens": 2
+            },
+            "total_tokens": 16
+          }
+        },
+        "status": 200
+      },
+      "source_cassette": "azure-openai-simple_chat.yaml",
+      "stream": {
+        "chunks": [
+          "data: {\"id\":\"chatcmpl_fixture\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"fixture-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n",
+          "data: {\"id\":\"chatcmpl_fixture\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"fixture-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"fixture-ok\"},\"finish_reason\":null}]}\n\n",
+          "data: {\"id\":\"chatcmpl_fixture\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"fixture-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+          "data: {\"id\":\"chatcmpl_fixture\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"fixture-model\",\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":4,\"total_tokens\":16,\"prompt_tokens_details\":{\"cached_tokens\":2},\"completion_tokens_details\":{\"reasoning_tokens\":1}}}\n\n",
+          "data: [DONE]\n\n"
+        ],
+        "framing": "sse"
+      },
+      "transport": "azure_openai_chat_completions"
+    },
+    {
+      "name": "azure_openai_responses",
+      "request": {
+        "headers": {
+          "api-key": "fixture-secret",
+          "content-type": "application/json",
+          "x-request-id": "request-fixture"
+        },
+        "json": {
+          "input": "Return the string fixture-ok.",
+          "max_output_tokens": 32,
+          "model": "fixture-model",
+          "stream": false
+        },
+        "method": "POST",
+        "path_and_query": "/openai/responses?api-version=fixture-version"
+      },
+      "response": {
+        "headers": {
+          "content-type": "application/json"
+        },
+        "json": {
+          "created_at": 1700000000,
+          "id": "resp_fixture",
+          "model": "fixture-model",
+          "object": "response",
+          "output": [
+            {
+              "content": [
+                {
+                  "annotations": [],
+                  "text": "fixture-ok",
+                  "type": "output_text"
+                }
+              ],
+              "id": "msg_fixture",
+              "role": "assistant",
+              "status": "completed",
+              "type": "message"
+            }
+          ],
+          "status": "completed",
+          "usage": {
+            "input_tokens": 12,
+            "input_tokens_details": {
+              "cached_tokens": 2
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 1
+            },
+            "total_tokens": 17
+          }
+        },
+        "status": 200
+      },
+      "source_cassette": "azure-openai-responses_simple.yaml",
+      "stream": {
+        "chunks": [
+          "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_fixture\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"in_progress\",\"model\":\"fixture-model\",\"output\":[],\"usage\":null}}\n\n",
+          "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":0,\"item\":{\"id\":\"msg_fixture\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}\n\n",
+          "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":2,\"item_id\":\"msg_fixture\",\"output_index\":0,\"content_index\":0,\"delta\":\"fixture-ok\"}\n\n",
+          "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":3,\"response\":{\"id\":\"resp_fixture\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"completed\",\"model\":\"fixture-model\",\"output\":[{\"id\":\"msg_fixture\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"fixture-ok\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":12,\"output_tokens\":5,\"total_tokens\":17,\"input_tokens_details\":{\"cached_tokens\":2},\"output_tokens_details\":{\"reasoning_tokens\":1}}}}\n\n",
+          "data: [DONE]\n\n"
+        ],
+        "framing": "sse"
+      },
+      "transport": "azure_openai_responses"
+    },
+    {
+      "name": "google_gemini_generate_content",
+      "request": {
+        "headers": {
+          "content-type": "application/json",
+          "x-goog-api-key": "fixture-secret",
+          "x-request-id": "request-fixture"
+        },
+        "json": {
+          "contents": [
+            {
+              "parts": [
+                {
+                  "text": "Return the string fixture-ok."
+                }
+              ],
+              "role": "user"
+            }
+          ],
+          "generationConfig": {
+            "maxOutputTokens": 32
+          }
+        },
+        "method": "POST",
+        "path_and_query": "/v1beta/models/fixture-model:generateContent"
+      },
+      "response": {
+        "headers": {
+          "content-type": "application/json"
+        },
+        "json": {
+          "candidates": [
+            {
+              "content": {
+                "parts": [
+                  {
+                    "text": "fixture-ok"
+                  }
+                ],
+                "role": "model"
+              },
+              "finishReason": "STOP"
+            }
+          ],
+          "modelVersion": "fixture-model",
+          "responseId": "gemini_fixture",
+          "usageMetadata": {
+            "cachedContentTokenCount": 2,
+            "candidatesTokenCount": 4,
+            "promptTokenCount": 12,
+            "thoughtsTokenCount": 1,
+            "totalTokenCount": 17
+          }
+        },
+        "status": 200
+      },
+      "source_cassette": null,
+      "stream": {
+        "chunks": [
+          "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"fixture-ok\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":12,\"candidatesTokenCount\":4,\"thoughtsTokenCount\":1,\"cachedContentTokenCount\":2,\"totalTokenCount\":17},\"modelVersion\":\"fixture-model\",\"responseId\":\"gemini_fixture\"}\n\n"
+        ],
+        "framing": "sse"
+      },
+      "transport": "google_gemini_generate_content"
+    },
+    {
+      "name": "google_vertex_generate_content",
+      "request": {
+        "headers": {
+          "authorization": "Bearer fixture-token",
+          "content-type": "application/json",
+          "x-request-id": "request-fixture"
+        },
+        "json": {
+          "contents": [
+            {
+              "parts": [
+                {
+                  "text": "Return the string fixture-ok."
+                }
+              ],
+              "role": "user"
+            }
+          ],
+          "generationConfig": {
+            "maxOutputTokens": 32
+          }
+        },
+        "method": "POST",
+        "path_and_query": "/v1/projects/fixture-project/locations/fixture-region/publishers/google/models/fixture-model:generateContent"
+      },
+      "response": {
+        "headers": {
+          "content-type": "application/json"
+        },
+        "json": {
+          "candidates": [
+            {
+              "content": {
+                "parts": [
+                  {
+                    "text": "fixture-ok"
+                  }
+                ],
+                "role": "model"
+              },
+              "finishReason": "STOP"
+            }
+          ],
+          "modelVersion": "fixture-model",
+          "responseId": "gemini_fixture",
+          "usageMetadata": {
+            "cachedContentTokenCount": 2,
+            "candidatesTokenCount": 4,
+            "promptTokenCount": 12,
+            "thoughtsTokenCount": 1,
+            "totalTokenCount": 17
+          }
+        },
+        "status": 200
+      },
+      "source_cassette": "gemini-simple_chat.yaml",
+      "stream": {
+        "chunks": [
+          "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"fixture-ok\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":12,\"candidatesTokenCount\":4,\"thoughtsTokenCount\":1,\"cachedContentTokenCount\":2,\"totalTokenCount\":17},\"modelVersion\":\"fixture-model\",\"responseId\":\"gemini_fixture\"}\n\n"
+        ],
+        "framing": "sse"
+      },
+      "transport": "google_vertex_generate_content"
+    },
+    {
+      "name": "openai_responses_websocket",
+      "request": {
+        "headers": {
+          "authorization": "Bearer fixture-secret",
+          "connection": "upgrade",
+          "upgrade": "websocket"
+        },
+        "json": null,
+        "method": "GET",
+        "path_and_query": "/v1/responses"
+      },
+      "response": {
+        "headers": {
+          "upgrade": "websocket"
+        },
+        "json": null,
+        "status": 101
+      },
+      "source_cassette": null,
+      "stream": {
+        "chunks": [
+          "{\"type\":\"response.create\",\"model\":\"fixture-model\",\"input\":\"Return the string fixture-ok.\",\"max_output_tokens\":32}",
+          "{\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_fixture\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"in_progress\",\"model\":\"fixture-model\",\"output\":[],\"usage\":null}}",
+          "{\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"msg_fixture\",\"output_index\":0,\"content_index\":0,\"delta\":\"fixture-ok\"}",
+          "{\"type\":\"response.completed\",\"sequence_number\":2,\"response\":{\"id\":\"resp_fixture\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"completed\",\"model\":\"fixture-model\",\"output\":[{\"id\":\"msg_fixture\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"fixture-ok\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":12,\"output_tokens\":5,\"total_tokens\":17,\"input_tokens_details\":{\"cached_tokens\":2},\"output_tokens_details\":{\"reasoning_tokens\":1}}}}"
+        ],
+        "framing": "websocket_text"
+      },
+      "transport": "openai_responses_websocket"
+    }
+  ],
+  "placeholders": {
+    "model": "fixture-model",
+    "output": "fixture-ok",
+    "prompt": "Return the string fixture-ok."
+  },
+  "source": {
+    "commit": "24b6a0bc9541ddb98d928a54303f85cfa1106d2f",
+    "note": "Recorded structures were sanitized; synthetic streaming and WebSocket frames are explicitly fixture-derived.",
+    "repository": "https://github.com/Wh1isper/llm-homelabs"
+  },
+  "version": 1
+}

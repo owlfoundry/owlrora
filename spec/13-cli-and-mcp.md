@@ -162,7 +162,7 @@ Protected secret material may enter an MCP request only when the tool is enabled
 
 An MCP update tool requires the opaque `etag` obtained from the corresponding get tool and sends it as `If-Match`. A `412` returns a structured conflict to the host; the MCP adapter never silently loads a new tag and resubmits the model's stale candidate.
 
-Non-idempotent and one-time-secret tools are issued at most once per invocation. An interrupted or ambiguous result is reported as unknown and is not retried. Follow-up uses safe metadata queries and a deliberate new command, matching the HTTP contract.
+Non-idempotent and one-time-secret tools are issued at most once per invocation. An interrupted or ambiguous result is reported as unknown and is not retried. Follow-up uses safe metadata queries and a deliberate new command, matching the HTTP contract. Upstream-secret replacement is different because it returns only safe metadata: the CLI/MCP creates one `Idempotency-Key`, reuses that exact key and identical input after a transient or ambiguous response, and never persists the secret beyond the bounded invocation. The server's idempotency request fingerprint uses the domain-separated keyed-MAC construction and bounded retention defined in specification 10, rather than persisting an offline-verifiable digest of secret material. Provider validation, source reload, pricing publication, and begin-epoch use their descriptor-declared idempotent state-machine behavior; destructive recovery is never automatically retried.
 
 ## 6. API descriptor and compatibility
 

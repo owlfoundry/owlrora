@@ -1,6 +1,8 @@
 use std::{
     collections::BTreeMap,
+    fs,
     io::{self, IsTerminal as _, Read},
+    path::Path,
     time::Duration,
 };
 
@@ -66,6 +68,15 @@ pub enum ClientError {
     RequestBodyTooLarge { path: String },
     #[error("failed to read request body from {path}: {source}")]
     ReadRequestBody { path: String, source: io::Error },
+    #[error(
+        "protected request body file {path} must be a non-symlink regular file owned by the current user with no group or other permissions"
+    )]
+    UnsafeProtectedRequestFile { path: String },
+    #[cfg(not(unix))]
+    #[error(
+        "protected request body files are unsupported on this platform; use redirected standard input"
+    )]
+    ProtectedRequestFilesUnsupported,
     #[error("invalid JSON request body from {path}: {source}")]
     InvalidRequestBody {
         path: String,
@@ -73,9 +84,7 @@ pub enum ClientError {
     },
     #[error("the request failed before a response was received: {message}")]
     QueryTransport { message: String },
-    #[error(
-        "command response is unavailable; it was sent at most once and was not retried: {message}"
-    )]
+    #[error("command response is unavailable and its final outcome is unknown: {message}")]
     CommandOutcomeUnknown { message: String },
     #[error("response exceeds the {MAX_RESPONSE_BYTES}-byte limit")]
     ResponseTooLarge,
@@ -97,6 +106,8 @@ pub enum ClientError {
     InteractiveSecretStdin,
     #[error("protected secret standard input must be valid UTF-8")]
     InvalidSecretUtf8,
+    #[error("a protected secret can be merged only into a JSON object candidate")]
+    SecretCandidateNotObject,
 }
 
 impl ClientError {
@@ -163,42 +174,56 @@ impl ManagementClient {
             });
         }
         let url = self.operation_url(operation, invocation)?;
-        let mut request = match operation.method.as_str() {
-            "GET" => self.http.get(url),
-            "POST" => self.http.post(url),
-            method => {
-                return Err(ClientError::InvalidServerUrl {
-                    value: method.to_owned(),
-                    message: "generated contract contains an unsupported method".to_owned(),
-                });
-            }
-        }
-        .header(AUTHORIZATION, self.authorization.clone())
-        .header(
-            "x-owlrora-client",
-            format!("{client_kind}/{}", env!("CARGO_PKG_VERSION")),
-        );
-        if let Some(etag) = &invocation.etag {
-            request = request.header("if-match", etag);
-        }
-        if let Some(idempotency_key) = &invocation.idempotency_key {
-            request = request.header("idempotency-key", idempotency_key);
-        }
-        if let Some(body) = &invocation.body {
-            request = request.json(body);
-        }
-        let response = request.send().map_err(|error| {
-            if operation.mode == OperationMode::Command {
-                ClientError::CommandOutcomeUnknown {
-                    message: safe_transport_message(&error),
-                }
-            } else {
-                ClientError::QueryTransport {
-                    message: safe_transport_message(&error),
+        let retry_safe =
+            operation.client_generated_idempotency_key && invocation.idempotency_key.is_some();
+        let max_attempts = if retry_safe { 2 } else { 1 };
+        for attempt in 0..max_attempts {
+            let mut request = match operation.method.as_str() {
+                "GET" => self.http.get(url.clone()),
+                "POST" => self.http.post(url.clone()),
+                method => {
+                    return Err(ClientError::InvalidServerUrl {
+                        value: method.to_owned(),
+                        message: "generated contract contains an unsupported method".to_owned(),
+                    });
                 }
             }
-        })?;
-        parse_response(response, operation)
+            .header(AUTHORIZATION, self.authorization.clone())
+            .header(
+                "x-owlrora-client",
+                format!("{client_kind}/{}", env!("CARGO_PKG_VERSION")),
+            );
+            if let Some(etag) = &invocation.etag {
+                request = request.header("if-match", etag);
+            }
+            if let Some(idempotency_key) = &invocation.idempotency_key {
+                request = request.header("idempotency-key", idempotency_key);
+            }
+            if let Some(body) = &invocation.body {
+                request = request.json(body);
+            }
+            let result = request.send().map_or_else(
+                |error| {
+                    Err(if operation.mode == OperationMode::Command {
+                        ClientError::CommandOutcomeUnknown {
+                            message: safe_transport_message(&error),
+                        }
+                    } else {
+                        ClientError::QueryTransport {
+                            message: safe_transport_message(&error),
+                        }
+                    })
+                },
+                |response| parse_response(response, operation),
+            );
+            match result {
+                Err(error) if attempt + 1 < max_attempts && retryable_idempotent_error(&error) => {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                result => return result,
+            }
+        }
+        unreachable!("every bounded HTTP attempt returns a result")
     }
 
     fn operation_url(
@@ -249,8 +274,12 @@ impl ManagementClient {
 pub fn load_request_body(
     source: &str,
     explicit_etag: Option<String>,
+    protected: bool,
 ) -> Result<(Value, Option<String>), ClientError> {
     let bytes = if source == "-" {
+        if protected && io::stdin().is_terminal() {
+            return Err(ClientError::InteractiveSecretStdin);
+        }
         read_bounded(io::stdin(), MAX_REQUEST_BYTES).map_err(|source| {
             ClientError::ReadRequestBody {
                 path: "standard input".to_owned(),
@@ -258,11 +287,14 @@ pub fn load_request_body(
             }
         })?
     } else {
-        let file =
-            std::fs::File::open(source).map_err(|source_error| ClientError::ReadRequestBody {
+        let file = if protected {
+            open_protected_request_file(Path::new(source))?
+        } else {
+            fs::File::open(source).map_err(|source_error| ClientError::ReadRequestBody {
                 path: source.to_owned(),
                 source: source_error,
-            })?;
+            })?
+        };
         read_bounded(file, MAX_REQUEST_BYTES).map_err(|source_error| {
             ClientError::ReadRequestBody {
                 path: source.to_owned(),
@@ -286,6 +318,64 @@ pub fn load_request_body(
     } else {
         Ok((value, explicit_etag))
     }
+}
+
+#[cfg(unix)]
+#[allow(clippy::verbose_bit_mask)]
+fn open_protected_request_file(path: &Path) -> Result<fs::File, ClientError> {
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
+
+    let unsafe_file = || ClientError::UnsafeProtectedRequestFile {
+        path: path.display().to_string(),
+    };
+    let before = fs::symlink_metadata(path).map_err(|source| ClientError::ReadRequestBody {
+        path: path.display().to_string(),
+        source,
+    })?;
+    let restricted = |metadata: &fs::Metadata| {
+        metadata.is_file()
+            && metadata.uid() == rustix::process::geteuid().as_raw()
+            && metadata.permissions().mode() & 0o077 == 0
+    };
+    if !restricted(&before) {
+        return Err(unsafe_file());
+    }
+    let nofollow = i32::try_from(rustix::fs::OFlags::NOFOLLOW.bits())
+        .expect("O_NOFOLLOW fits platform custom flags");
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nofollow)
+        .open(path)
+        .map_err(|source| ClientError::ReadRequestBody {
+            path: path.display().to_string(),
+            source,
+        })?;
+    let after = file
+        .metadata()
+        .map_err(|source| ClientError::ReadRequestBody {
+            path: path.display().to_string(),
+            source,
+        })?;
+    if !restricted(&after) || before.dev() != after.dev() || before.ino() != after.ino() {
+        return Err(unsafe_file());
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn open_protected_request_file(_path: &Path) -> Result<fs::File, ClientError> {
+    Err(ClientError::ProtectedRequestFilesUnsupported)
+}
+
+pub fn merge_secret_input(candidate: Value, secret: Value) -> Result<Value, ClientError> {
+    let Value::Object(mut candidate) = candidate else {
+        return Err(ClientError::SecretCandidateNotObject);
+    };
+    let Value::Object(secret) = secret else {
+        return Err(ClientError::SecretCandidateNotObject);
+    };
+    candidate.extend(secret);
+    Ok(Value::Object(candidate))
 }
 
 pub fn read_secret_stdin(key_uses_stdin: bool, field: &str) -> Result<Value, ClientError> {
@@ -467,6 +557,16 @@ fn read_bounded(mut reader: impl Read, limit: usize) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+fn retryable_idempotent_error(error: &ClientError) -> bool {
+    match error {
+        ClientError::CommandOutcomeUnknown { .. } => true,
+        ClientError::Api { status, .. } => {
+            matches!(status.as_u16(), 408 | 425 | 429 | 500 | 502 | 503 | 504)
+        }
+        _ => false,
+    }
+}
+
 fn safe_transport_message(error: &reqwest::Error) -> String {
     if error.is_timeout() {
         "request timed out".to_owned()
@@ -487,6 +587,47 @@ fn is_loopback_host(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protected_secret_merge_preserves_candidate_fields_and_replaces_only_its_field() {
+        let merged = merge_secret_input(
+            json!({"name":"credential","secret":"stale"}),
+            json!({"secret":"fresh"}),
+        )
+        .unwrap();
+        assert_eq!(merged, json!({"name":"credential","secret":"fresh"}));
+        assert!(matches!(
+            merge_secret_input(json!([]), json!({"secret":"fresh"})),
+            Err(ClientError::SecretCandidateNotObject)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn protected_request_files_require_owner_only_regular_files() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("candidate.json");
+        fs::write(&path, br#"{"secret":"protected"}"#).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let (candidate, _) = load_request_body(path.to_str().unwrap(), None, true).unwrap();
+        assert_eq!(candidate, json!({"secret":"protected"}));
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(matches!(
+            load_request_body(path.to_str().unwrap(), None, true),
+            Err(ClientError::UnsafeProtectedRequestFile { .. })
+        ));
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let link = directory.path().join("candidate-link.json");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(matches!(
+            load_request_body(link.to_str().unwrap(), None, true),
+            Err(ClientError::UnsafeProtectedRequestFile { .. })
+        ));
+    }
 
     #[test]
     fn loopback_detection_does_not_trust_suffixes() {

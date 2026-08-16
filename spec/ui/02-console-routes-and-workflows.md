@@ -81,6 +81,7 @@ All routes under `/organizations/{organization_id}` require `OrganizationVisible
 | `/organizations/{organization_id}/upstream-credentials` | BYOK credentials | organization-only safe metadata and dependent deployments |
 | `/organizations/{organization_id}/upstream-credentials/new` | Create BYOK credential | write-only encrypted secret and safe adapter kind |
 | `/organizations/{organization_id}/upstream-credentials/{credential_id}` | BYOK credential detail | status/version/validation; no secret |
+| `/organizations/{organization_id}/upstream-credentials/{credential_id}/edit` | Edit BYOK credential metadata/lifecycle | uniform ETag update; no secret/source widening |
 | `/organizations/{organization_id}/upstream-credentials/{credential_id}/replace-secret` | Replace BYOK secret | write-only one-way action |
 | `/organizations/{organization_id}/model-deployments` | Model deployments | same-org BYOK deployments plus safe eligibility state |
 | `/organizations/{organization_id}/model-deployments/new` | Create model deployment | same-org credential and granted system endpoint only |
@@ -213,15 +214,24 @@ Allowed `{family}` values and API families are:
 
 | Browser family | API family | Detail emphasis |
 | --- | --- | --- |
+| `egress-network-policies` | `/api/v1/system/egress-network-policies` | DNS/address/TLS/redirect/connection/body bounds, reserved null-only proxy field, protected CA state |
 | `credentials` | `/api/v1/system/upstream-credentials` | kind, source/custody state, version, validation, dependent deployments |
 | `endpoints` | `/api/v1/system/upstream-endpoints` | origin/network policy, adapter, validation, health |
 | `deployments` | `/api/v1/system/model-deployments` | endpoint + credential + transport + model, capabilities |
 | `model-routes` | `/api/v1/system/model-routes` | model key, targets, policy, grants, stateful behavior |
 | `pricing-policies` | `/api/v1/system/pricing-policies` | immutable versions and publication |
 | `reliability-policies` | `/api/v1/system/reliability-policies` | retry/failover/circuit behavior |
-| `gateway-policy-ceilings` | `/api/v1/system/gateway-policy-ceilings` | system bounds and organization grants |
 
-The router registers only the allowlisted family values; arbitrary family strings do not become API paths.
+Gateway policy ceilings are one deployment-wide singleton rather than an ID-qualified catalog collection:
+
+```text
+/admin/catalog/gateway-policy-ceilings
+/admin/catalog/gateway-policy-ceilings/edit
+```
+
+They map to singleton `GET /api/v1/system/gateway-policy-ceilings` and `POST /api/v1/system/gateway-policy-ceilings/actions/update`; no create or resource-ID route exists.
+
+The router registers only the allowlisted family values; arbitrary family strings do not become API paths. Egress policies use the same list/new/detail/edit route shape as the other ordinary catalog collections, and every ordinary update or singleton ceiling update uses the ETag conflict workflow. The UI never displays protected custom-CA bytes.
 
 Additional credential workflow routes are:
 
@@ -232,7 +242,11 @@ Additional credential workflow routes are:
 
 `replace-secret` is a write-only action page. The Codex page shows safe device-flow state and invokes only the explicit Codex actions from specification 10. The login-session ID is opaque state identity, not a bearer; no OAuth token enters the URL or browser response.
 
-### 6.5 Operations
+### 6.5 Usage and operations
+
+`/admin/usage` is the bounded global aggregate explorer backed by `GET /api/v1/system/usage` and `/api/v1/system/usage/breakdown`. It separates logical requests from attempts and supports safe organization, route, target origin, deployment, outcome, and time dimensions; it is not an operational status or raw-request log.
+
+Validation, source reload, pricing publication, and other explicit catalog actions remain controls on the applicable detail page rather than creating extra browser routes. Their checked operation descriptors still govern idempotency, approval, and audit.
 
 | Browser route | Purpose | Primary evidence |
 | --- | --- | --- |
@@ -241,6 +255,10 @@ Additional credential workflow routes are:
 | `/admin/operations/runtime` | runtime revision, age, publication, journal lag | `GET /api/v1/system/operations/runtime` |
 | `/admin/operations/coordination` | Redis topology/health, active generations, grants, recovery exposure | `GET /api/v1/system/operations/coordination` |
 | `/admin/operations/coordination/recoveries` | durable recovery incidents and epoch caps | `GET /api/v1/system/operations/coordination/recoveries` and typed recovery actions |
+| `/admin/operations/coordination/activations` | staged/armed/active/finalized generations and deadlines | `GET /api/v1/system/operations/coordination/activations` |
+| `/admin/operations/state-origins` | bounded origin-binding status and cleanup | `GET /api/v1/system/operations/state-origins` |
+| `/admin/operations/upstream-credentials` | refresh/login/controller due work and fenced errors | `GET /api/v1/system/operations/upstream-credentials` |
+| `/admin/operations/target-health` | local/shared target health and probes | `GET /api/v1/system/operations/target-health` |
 | `/admin/operations/secret-custody` | bundled/custom provider and protected-format readiness | `GET /api/v1/system/operations/secret-custody` |
 | `/admin/operations/usage-pipeline` | aggregate queue, flush, rollup, loss | `GET /api/v1/system/operations/usage-pipeline` |
 | `/admin/operations/telemetry` | OTLP exporter, queue, drops, collector state | `GET /api/v1/system/operations/telemetry` |

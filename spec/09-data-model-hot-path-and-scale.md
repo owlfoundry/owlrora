@@ -93,8 +93,8 @@ There is no provider-connection or model-alias table.
 - `gateway_key_budget_policies`, one mandatory stable policy per Gateway key;
 - `organization_origin_budget_policies`, unique by `(organization_id, system_provided | organization_byok)`;
 - immutable desired/active budget-policy versions carrying `enforce | record_only`, limit, epoch, estimate, allowance, failure, and recovery configuration;
-- Gateway-key-only rate and concurrency policies with immutable desired/active versions;
-- durable coordinator activation states, generations, and externally controlled epochs;
+- one optional Gateway-key request-limits policy per key, with immutable desired/active versions carrying both rate and optional approximate/strict concurrency configuration; there is no independent concurrency-policy reference;
+- durable coordinator activation states with explicit `policy_kind + policy_id`, generations, and externally controlled epochs;
 - durable approximate allowance checkpoints and recovery records keyed by exact policy/epoch;
 - `logical_usage_hourly` and `attempt_usage_hourly` plus daily rollups, with target-derived origin and applicable key/origin policy epochs;
 - `aggregate_flush_receipts` keyed by process source epoch and batch sequence.
@@ -150,7 +150,7 @@ A short successful JWT signature cache keys by `(token_digest, issuer_id, algori
 
 Persistent immutable maps and `Arc` sharing avoid cloning the whole deployment for one tenant change.
 
-Recoverable upstream plaintext is deliberately excluded from the serializable-safe snapshot. The catalog references `(credential_id, secret_version)`, while the same atomic runtime generation carries a non-serializable credential-client registry built for those versions.
+Recoverable upstream plaintext is deliberately excluded from the serializable-safe snapshot. The catalog references `(credential_id, secret_version)`, while the same atomic runtime generation carries a non-serializable credential-client registry keyed by exactly `(credential_id, secret_version, endpoint_id, endpoint_config_version, transport_kind)`. Database-backed upstream secret-version rows reference exactly one generic protected-secret envelope; environment, file, and workload versions persist only typed bounded source configuration.
 
 ## 6. Configuration synchronization
 

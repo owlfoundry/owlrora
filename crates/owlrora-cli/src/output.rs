@@ -18,26 +18,34 @@ pub fn print_response(
             "Warning: this response contains a one-time secret. It cannot be recovered after this output."
         );
     }
-    match format {
-        OutputFormat::Json => {
-            let envelope = json!({
-                "data":response.body,
-                "client":{
-                    "http_status":response.status.as_u16(),
-                    "etag":response.etag,
-                    "request_id":response.request_id,
-                }
-            });
-            serde_json::to_writer_pretty(io::stdout().lock(), &envelope)?;
-            println!();
-        }
-        OutputFormat::Table => print_table(&response.body, response.status.as_u16())?,
+    let mut output = io::stdout().lock();
+    write_response(&mut output, response, format, one_time_sensitive)
+}
+
+fn write_response(
+    output: &mut impl Write,
+    response: &OperationResponse,
+    format: OutputFormat,
+    one_time_sensitive: bool,
+) -> io::Result<()> {
+    if format == OutputFormat::Json || one_time_sensitive {
+        let envelope = json!({
+            "data":response.body,
+            "client":{
+                "http_status":response.status.as_u16(),
+                "etag":response.etag,
+                "request_id":response.request_id,
+            }
+        });
+        serde_json::to_writer_pretty(&mut *output, &envelope)?;
+        writeln!(output)?;
+    } else {
+        print_table(output, &response.body, response.status.as_u16())?;
     }
     Ok(())
 }
 
-fn print_table(value: &Value, status: u16) -> io::Result<()> {
-    let mut output = io::stdout().lock();
+fn print_table(output: &mut impl Write, value: &Value, status: u16) -> io::Result<()> {
     if value.is_null() {
         writeln!(output, "HTTP {status}")?;
         return Ok(());
@@ -47,7 +55,7 @@ fn print_table(value: &Value, status: u16) -> io::Result<()> {
         .and_then(Value::as_array)
         .or_else(|| value.as_array());
     if let Some(rows) = rows {
-        return print_rows(&mut output, rows);
+        return print_rows(output, rows);
     }
     if let Some(object) = value.as_object() {
         for (key, value) in object.iter().take(MAX_TABLE_ROWS) {
@@ -146,5 +154,24 @@ mod tests {
         let rendered = truncate(&input);
         assert_eq!(rendered.chars().count(), MAX_CELL_CHARACTERS + 1);
         assert!(rendered.ends_with('…'));
+    }
+
+    #[test]
+    fn one_time_secret_bypasses_table_cell_truncation() {
+        let key = format!("owlrora_llm_v1.{}.{}", "l".repeat(22), "s".repeat(43));
+        assert_eq!(key.len(), 81);
+        let response = OperationResponse {
+            status: reqwest::StatusCode::OK,
+            body: json!({"key":key}),
+            etag: Some("\"etag\"".to_owned()),
+            request_id: Some("req_test".to_owned()),
+        };
+        let mut output = Vec::new();
+        write_response(&mut output, &response, OutputFormat::Table, true).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains(&key));
+        assert!(!output.contains('…'));
+        let rendered: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(rendered["data"]["key"], key);
     }
 }

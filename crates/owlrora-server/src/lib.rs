@@ -3,33 +3,50 @@
     clippy::assigning_clones,
     clippy::clone_on_copy,
     clippy::collapsible_if,
+    clippy::default_trait_access,
     clippy::double_must_use,
     clippy::duration_suboptimal_units,
+    clippy::format_collect,
+    clippy::format_push_string,
+    clippy::ignored_unit_patterns,
     clippy::items_after_statements,
     clippy::manual_let_else,
     clippy::map_unwrap_or,
+    clippy::match_same_arms,
     clippy::missing_errors_doc,
     clippy::missing_panics_doc,
     clippy::must_use_candidate,
+    clippy::needless_borrow,
     clippy::needless_pass_by_value,
+    clippy::needless_raw_string_hashes,
     clippy::nonminimal_bool,
+    clippy::redundant_closure_for_method_calls,
     clippy::single_char_pattern,
+    clippy::single_match_else,
     clippy::too_many_arguments,
     clippy::too_many_lines,
     clippy::type_complexity,
     clippy::unnecessary_wraps,
-    clippy::unused_self
+    clippy::unnested_or_patterns,
+    clippy::unused_self,
+    clippy::useless_conversion,
+    clippy::while_let_loop
 )]
 
 pub mod adapters;
 pub mod application;
+pub mod composition;
 pub mod config;
 pub mod domain;
+pub mod gateway;
 pub mod http;
+pub mod protocols;
 pub mod runtime;
 pub mod secrets;
 
-use std::{borrow::Cow, io, net::SocketAddr, sync::Arc};
+#[cfg(test)]
+use std::net::SocketAddr;
+use std::{borrow::Cow, io, sync::Arc};
 
 use axum::{
     Router,
@@ -43,14 +60,15 @@ use thiserror::Error;
 use tokio::net::TcpListener;
 
 use crate::{
-    adapters::postgres::{PgStore, StoreError},
-    application::{Application, ApplicationError},
+    adapters::postgres::StoreError,
+    application::ApplicationError,
     config::{DeploymentProfile, ServerConfig},
     runtime::RuntimePublisher,
-    secrets::{SoftwareSecretError, SoftwareSecretService},
+    secrets::{CustodyCompositionError, SecretServiceError, SoftwareSecretError},
 };
 
-/// Prospective provider-neutral SPI; custom-provider registration is not implemented yet.
+pub use composition::{BuiltServer, ServerBuilder};
+/// Provider-neutral SPI used by trusted statically linked custom custody implementations.
 pub use owlrora_key_provider as key_provider;
 
 #[derive(Embed)]
@@ -63,16 +81,28 @@ pub enum StartupError {
     MissingConfiguration(&'static str),
     #[error(transparent)]
     Store(#[from] StoreError),
+    #[error("database operation failed during server composition")]
+    Database(#[from] sqlx::Error),
     #[error(transparent)]
     Secret(#[from] SoftwareSecretError),
+    #[error(transparent)]
+    CustodyComposition(#[from] CustodyCompositionError),
+    #[error(transparent)]
+    SecretService(#[from] SecretServiceError),
+    #[error(transparent)]
+    Coordinator(#[from] crate::adapters::coordinator::CoordinatorError),
+    #[error("persisted configuration secret custody metadata is invalid")]
+    InvalidCustodyMetadata,
+    #[error("persisted configuration secret custody format is not available in this binary")]
+    UnsupportedPersistedCustody,
     #[error(transparent)]
     Application(#[from] ApplicationError),
 }
 
-/// Builds the health-only router used by package smoke tests and the health-only profile.
+/// Builds the embedded-console router used by package smoke tests.
 #[must_use]
 pub fn app() -> Router {
-    base_router()
+    console_router()
 }
 
 /// Builds a router from validated deployment configuration.
@@ -80,52 +110,27 @@ pub async fn configured_app(
     config: Arc<ServerConfig>,
 ) -> Result<(Router, Option<Arc<RuntimePublisher>>), StartupError> {
     if config.profile == DeploymentProfile::HealthOnly {
-        return Ok((base_router(), None));
+        return Ok((health_router(), None));
     }
-    let database_url = config
-        .database_url
-        .as_deref()
-        .ok_or(StartupError::MissingConfiguration("OWLRORA_DATABASE_URL"))?;
-    let secret_root = config
-        .secret_root
-        .clone()
-        .ok_or(StartupError::MissingConfiguration("OWLRORA_SECRET_ROOT"))?;
-    let store = PgStore::connect(database_url, config.database_max_connections).await?;
-    let runtime =
-        RuntimePublisher::start(store.clone(), format!("node-{}", std::process::id())).await?;
-    let secrets = Arc::new(SoftwareSecretService::new(secret_root)?);
-    let application = Arc::new(Application::new(
-        store,
-        Arc::clone(&runtime),
-        config,
-        secrets,
-    )?);
-    application.start_identity_refresh_controller();
-    let router = base_router().merge(http::management_router(application));
-    Ok((router, Some(runtime)))
+    Ok(ServerBuilder::new(config).build().await?.into_parts())
 }
 
 /// Serves the configured application until a shutdown signal is received.
 pub async fn run(listener: TcpListener, config: Arc<ServerConfig>) -> io::Result<()> {
-    let (router, runtime) = configured_app(config)
+    ServerBuilder::new(config)
+        .build()
         .await
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    let result = axum::serve(
-        listener,
-        router.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal())
-    .await;
-    if let Some(runtime) = runtime {
-        runtime.shutdown().await;
-    }
-    result
+        .map_err(|error| io::Error::other(error.to_string()))?
+        .serve(listener)
+        .await
 }
 
-fn base_router() -> Router {
-    Router::new()
-        .route("/health", get(health))
-        .fallback(get(frontend))
+pub(crate) fn health_router() -> Router {
+    Router::new().route("/health", get(health))
+}
+
+pub(crate) fn console_router() -> Router {
+    health_router().fallback(get(frontend))
 }
 
 async fn health() -> &'static str {
@@ -136,7 +141,7 @@ async fn frontend(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     if matches!(
         path.split('/').next(),
-        Some("api" | "auth" | "health" | "ready")
+        Some("api" | "auth" | "v1" | "v1beta" | "health" | "ready")
     ) {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -182,7 +187,7 @@ fn asset_response(path: &str, data: Cow<'static, [u8]>) -> Response {
 }
 
 #[cfg(unix)]
-async fn shutdown_signal() {
+pub(crate) async fn shutdown_signal() {
     use tokio::signal::unix::{SignalKind, signal};
 
     let mut terminate = signal(SignalKind::terminate()).expect("failed to listen for SIGTERM");
@@ -197,7 +202,7 @@ async fn shutdown_signal() {
 }
 
 #[cfg(not(unix))]
-async fn shutdown_signal() {
+pub(crate) async fn shutdown_signal() {
     if let Err(error) = tokio::signal::ctrl_c().await {
         tracing::error!(%error, "failed to listen for Ctrl+C");
     }
@@ -306,6 +311,11 @@ mod tests {
         let Ok(database_url) = std::env::var("OWLRORA_TEST_DATABASE_URL") else {
             return;
         };
+        let Ok(redis_url) = std::env::var("OWLRORA_TEST_REDIS_URL") else {
+            return;
+        };
+        let _database_guard =
+            crate::adapters::postgres::test_support::shared_database_test_lock().await;
         let seed_key = crate::domain::generate_management_key().expose_once();
         let config = Arc::new(
             ServerConfig::from_values(&BTreeMap::from([
@@ -313,6 +323,11 @@ mod tests {
                 (
                     "OWLRORA_PUBLIC_ORIGIN".to_owned(),
                     "http://127.0.0.1:8080".to_owned(),
+                ),
+                ("OWLRORA_REDIS_URL".to_owned(), redis_url),
+                (
+                    "OWLRORA_NODE_INSTANCE_ID".to_owned(),
+                    format!("management-e2e-{}", uuid::Uuid::now_v7()),
                 ),
                 ("OWLRORA_SEED_ADMIN_API_KEY".to_owned(), seed_key.clone()),
                 (
@@ -495,6 +510,112 @@ mod tests {
             serde_json::from_slice::<Value>(&concurrent_b).unwrap(),
         );
 
+        let create_pricing_policy = |name: String| {
+            Request::post("/api/v1/system/pricing-policies/actions/create")
+                .header(header::AUTHORIZATION, &authorization)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"name":name,"status":"active"}).to_string(),
+                ))
+                .unwrap()
+        };
+        let primary_pricing = router
+            .clone()
+            .oneshot(create_pricing_policy(format!("Pricing A {unique}")))
+            .await
+            .unwrap();
+        assert_eq!(primary_pricing.status(), StatusCode::OK);
+        let primary_etag = primary_pricing.headers()[header::ETAG]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let primary_pricing: Value = serde_json::from_slice(
+            &to_bytes(primary_pricing.into_body(), 64 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let primary_id = primary_pricing["id"].as_str().unwrap();
+        let alternate_pricing = router
+            .clone()
+            .oneshot(create_pricing_policy(format!("Pricing B {unique}")))
+            .await
+            .unwrap();
+        assert_eq!(alternate_pricing.status(), StatusCode::OK);
+        let alternate_etag = alternate_pricing.headers()[header::ETAG]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let alternate_pricing: Value = serde_json::from_slice(
+            &to_bytes(alternate_pricing.into_body(), 64 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let alternate_id = alternate_pricing["id"].as_str().unwrap();
+        let publish_key = format!("pricing-publish-{unique}");
+        let publish_body = json!({
+            "rates":{
+                "currency":"USD",
+                "cost_nanos_per_unit":{"input_token":10}
+            },
+            "rounding_policy":{"mode":"nearest","quantum_units":1},
+            "organization_usable":true,
+            "publication_evidence":{}
+        })
+        .to_string();
+        let publish_request = |pricing_id: &str, etag: &str| {
+            Request::post(format!(
+                "/api/v1/system/pricing-policies/{pricing_id}/actions/publish-version"
+            ))
+            .header(header::AUTHORIZATION, &authorization)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::IF_MATCH, etag)
+            .header("idempotency-key", &publish_key)
+            .body(Body::from(publish_body.clone()))
+            .unwrap()
+        };
+        let published_a = router
+            .clone()
+            .oneshot(publish_request(primary_id, &primary_etag))
+            .await
+            .unwrap();
+        assert_eq!(published_a.status(), StatusCode::OK);
+        let published_a_etag = published_a.headers()[header::ETAG]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let published_a_body = to_bytes(published_a.into_body(), 64 * 1024).await.unwrap();
+        let cross_resource = router
+            .clone()
+            .oneshot(publish_request(alternate_id, &alternate_etag))
+            .await
+            .unwrap();
+        assert_eq!(cross_resource.status(), StatusCode::CONFLICT);
+        let changed_precondition = router
+            .clone()
+            .oneshot(publish_request(primary_id, &published_a_etag))
+            .await
+            .unwrap();
+        assert_eq!(changed_precondition.status(), StatusCode::CONFLICT);
+        let exact_publish_replay = router
+            .clone()
+            .oneshot(publish_request(primary_id, &primary_etag))
+            .await
+            .unwrap();
+        assert_eq!(exact_publish_replay.status(), StatusCode::OK);
+        assert_eq!(
+            exact_publish_replay.headers()[header::ETAG],
+            published_a_etag
+        );
+        let exact_publish_replay = to_bytes(exact_publish_replay.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&exact_publish_replay).unwrap(),
+            serde_json::from_slice::<Value>(&published_a_body).unwrap(),
+        );
+
         let create_organization = Request::post("/api/v1/system/organizations/actions/create")
             .header(header::AUTHORIZATION, &authorization)
             .header(header::CONTENT_TYPE, "application/json")
@@ -537,6 +658,127 @@ mod tests {
         );
         let organization: Value = serde_json::from_slice(&response_body).unwrap();
         let organization_id = organization["id"].as_str().unwrap();
+        let organization_runtime_id: crate::domain::OrganizationId =
+            serde_json::from_value(organization["id"].clone()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if runtime
+                    .as_ref()
+                    .unwrap()
+                    .capture()
+                    .snapshot
+                    .identity
+                    .active_organizations
+                    .get(&organization_runtime_id)
+                    .copied()
+                    == Some(true)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("new organization should reach the runtime generation");
+
+        let usage_range = "start=2026-01-01T00%3A00%3A00Z&end=2026-01-02T00%3A00%3A00Z";
+        let system_usage = router
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/system/usage?{usage_range}"))
+                    .header(header::AUTHORIZATION, &authorization)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(system_usage.status(), StatusCode::OK);
+        let system_usage: Value =
+            serde_json::from_slice(&to_bytes(system_usage.into_body(), 64 * 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(system_usage["scope"]["kind"], "system");
+        assert_eq!(
+            system_usage["completeness"]["includes_unflushed_process_facts"],
+            false
+        );
+        assert_eq!(system_usage["logical_requests"]["applicable"], true);
+
+        let system_breakdown = router
+            .clone()
+            .oneshot(
+                Request::get(format!(
+                    "/api/v1/system/usage/breakdown?{usage_range}&fact_family=attempts&dimension=origin"
+                ))
+                .header(header::AUTHORIZATION, &authorization)
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(system_breakdown.status(), StatusCode::OK);
+
+        let organization_usage = router
+            .clone()
+            .oneshot(
+                Request::get(format!(
+                    "/api/v1/organizations/{organization_id}/usage?{usage_range}"
+                ))
+                .header(header::AUTHORIZATION, &authorization)
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(organization_usage.status(), StatusCode::OK);
+        let organization_usage: Value = serde_json::from_slice(
+            &to_bytes(organization_usage.into_body(), 64 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            organization_usage["scope"]["organization_id"],
+            organization_id
+        );
+
+        let operations_paths = crate::http::operation_catalog()
+            .into_iter()
+            .filter(|operation| {
+                operation.qualification == crate::http::OperationQualification::Operations
+                    && operation.mode == crate::http::OperationMode::Query
+            })
+            .map(|operation| operation.path)
+            .collect::<Vec<_>>();
+        assert!(!operations_paths.is_empty());
+        for path in operations_paths {
+            let mut request = Request::get(path)
+                .header(header::AUTHORIZATION, &authorization)
+                .body(Body::empty())
+                .unwrap();
+            request.extensions_mut().insert(axum::extract::ConnectInfo(
+                "127.0.0.1:45123".parse::<SocketAddr>().unwrap(),
+            ));
+            let response = router.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::CACHE_CONTROL)
+                    .and_then(|value| value.to_str().ok()),
+                Some("no-store"),
+                "{path}"
+            );
+        }
+
+        let ready = router
+            .clone()
+            .oneshot(Request::get("/ready").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(ready.status(), StatusCode::OK);
+        let ready: Value =
+            serde_json::from_slice(&to_bytes(ready.into_body(), 64 * 1024).await.unwrap()).unwrap();
+        assert_eq!(ready, json!({"status":"ready"}));
 
         let seed_principal = router
             .clone()
@@ -560,29 +802,6 @@ mod tests {
             seed_principal["capabilities"].as_array().unwrap().len(),
             crate::domain::Capability::ALL.len()
         );
-
-        let organization_runtime_id: crate::domain::OrganizationId =
-            serde_json::from_value(organization["id"].clone()).unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(3), async {
-            loop {
-                if runtime
-                    .as_ref()
-                    .unwrap()
-                    .capture()
-                    .snapshot
-                    .identity
-                    .active_organizations
-                    .get(&organization_runtime_id)
-                    .copied()
-                    == Some(true)
-                {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("new organization should reach the runtime generation");
 
         let organization_key = router
             .clone()
@@ -671,6 +890,19 @@ mod tests {
             organization_id
         );
         assert_eq!(organization_page["next_cursor"], Value::Null);
+        let denied_usage = router
+            .clone()
+            .oneshot(
+                Request::get(format!(
+                    "/api/v1/organizations/{organization_id}/usage?{usage_range}"
+                ))
+                .header(header::AUTHORIZATION, &organization_authorization)
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_usage.status(), StatusCode::FORBIDDEN);
 
         let create_key = Request::post("/api/v1/system/management-api-keys/actions/create")
             .header(header::AUTHORIZATION, &authorization)

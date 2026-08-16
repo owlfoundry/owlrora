@@ -10,9 +10,9 @@ use uuid::Uuid;
 use crate::{
     adapters::postgres::{AuditRecord, RuntimeEvent},
     domain::{
-        Actor, Capability, KeyId, ManagementScope, ManagementScopeSet, MaterialVersionId,
-        OrganizationId, OrganizationRole, Principal, ResourceScope, generate_management_key,
-        management_key_digest,
+        Actor, BudgetMode, Capability, KeyId, LlmScopeSet, ManagementScope, ManagementScopeSet,
+        MaterialVersionId, OrganizationId, OrganizationRole, Principal, ResourceScope, RouteId,
+        generate_management_key, management_key_digest,
     },
 };
 
@@ -201,7 +201,7 @@ impl Application {
                 Some(&key_event(&scope, key_id, false)),
             )
             .await?;
-        if let Err(error) = self.runtime.refresh_now(&self.store).await {
+        if let Err(error) = self.runtime.refresh_now().await {
             tracing::error!(
                 request_id = %identity.request_id,
                 key_id = %key_id,
@@ -540,7 +540,7 @@ impl Application {
                 )),
             )
             .await?;
-        if let Err(error) = self.runtime.refresh_now(&self.store).await {
+        if let Err(error) = self.runtime.refresh_now().await {
             tracing::error!(
                 request_id = %identity.request_id,
                 key_id = %key_id,
@@ -707,7 +707,9 @@ impl Application {
         let current_policy: Value = row.try_get("policy")?;
         ensure_policy_expansion_dominance(identity, &scope, &current_policy, &policy)?;
         clamp_keys_to_policy(&mut transaction, &scope, &policy).await?;
+        clamp_gateway_keys_to_policy(&mut transaction, organization_id, &policy).await?;
         ensure_active_key_counts_fit_policy(&mut transaction, &scope, &policy).await?;
+        ensure_gateway_policies_fit_policy(&mut transaction, organization_id, &policy).await?;
         sqlx::query(
             "UPDATE organization_api_key_policies
              SET policy=$2, etag_token=$3, updated_at=now() WHERE organization_id=$1",
@@ -1578,6 +1580,44 @@ async fn ensure_active_key_counts_fit_policy(
                 "active member self-service keys exceed the proposed policy limit".to_owned(),
             ));
         }
+        let gateway_count = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM gateway_api_keys
+             WHERE organization_id=$1 AND status='active'
+               AND (expires_at IS NULL OR expires_at > now())",
+        )
+        .bind(organization_id)
+        .fetch_one(&mut **transaction)
+        .await?;
+        let gateway_maximum = policy["gateway"]["max_active_keys"]
+            .as_u64()
+            .ok_or(ApplicationError::Internal)?;
+        if policy["gateway"]["enabled"] == true
+            && u64::try_from(gateway_count).unwrap_or(u64::MAX) > gateway_maximum
+        {
+            return Err(ApplicationError::Conflict(
+                "active Gateway keys exceed the proposed global policy limit".to_owned(),
+            ));
+        }
+        let gateway_member_count = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM gateway_api_keys
+             WHERE organization_id=$1 AND status='active'
+               AND (expires_at IS NULL OR expires_at > now())
+               AND issuance_policy_class='member_self_service'",
+        )
+        .bind(organization_id)
+        .fetch_one(&mut **transaction)
+        .await?;
+        let gateway_member_maximum = policy["gateway_member_self_service"]["max_active_keys"]
+            .as_u64()
+            .ok_or(ApplicationError::Internal)?;
+        if policy["gateway_member_self_service"]["enabled"] == true
+            && u64::try_from(gateway_member_count).unwrap_or(u64::MAX) > gateway_member_maximum
+        {
+            return Err(ApplicationError::Conflict(
+                "active member self-service Gateway keys exceed the proposed policy limit"
+                    .to_owned(),
+            ));
+        }
     }
     Ok(())
 }
@@ -1738,6 +1778,325 @@ async fn clamp_keys_to_policy(
     Ok(())
 }
 
+async fn clamp_gateway_keys_to_policy(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: OrganizationId,
+    policy: &Value,
+) -> Result<(), ApplicationError> {
+    let rows = sqlx::query(
+        "SELECT id,issuance_policy_class,scopes,status,expires_at,created_at
+         FROM gateway_api_keys WHERE organization_id=$1 FOR UPDATE",
+    )
+    .bind(organization_id.as_uuid())
+    .fetch_all(&mut **transaction)
+    .await?;
+    for row in rows {
+        let key_id: Uuid = row.try_get("id")?;
+        let class: String = row.try_get("issuance_policy_class")?;
+        let global = gateway_policy_section(policy, "standard")?;
+        let class_policy = gateway_policy_section(policy, &class)?;
+        let enabled = gateway_policy_enabled(global)? && gateway_policy_enabled(class_policy)?;
+        let global_scopes = gateway_policy_scopes(global)?;
+        let class_scopes = gateway_policy_scopes(class_policy)?;
+        let stored_scopes = scopes_from_policy_value(row.try_get("scopes")?)?;
+        let effective_scopes = stored_scopes
+            .intersection(&global_scopes)
+            .and_then(|scopes| scopes.intersection(&class_scopes));
+        let global_routes = gateway_policy_routes(global)?;
+        let class_routes = gateway_policy_routes(class_policy)?;
+        let allowed_routes = global_routes
+            .intersection(&class_routes)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let route_rows = sqlx::query_scalar::<_, Uuid>(
+            "SELECT route_id FROM gateway_api_key_routes WHERE gateway_api_key_id=$1 FOR UPDATE",
+        )
+        .bind(key_id)
+        .fetch_all(&mut **transaction)
+        .await?;
+        let stored_routes = route_rows
+            .iter()
+            .copied()
+            .map(RouteId::from_uuid)
+            .collect::<BTreeSet<_>>();
+        let effective_routes = stored_routes
+            .intersection(&allowed_routes)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let current_status: String = row.try_get("status")?;
+        let status = if current_status == "revoked"
+            || !enabled
+            || effective_scopes.is_none()
+            || effective_routes.is_empty()
+        {
+            "revoked"
+        } else {
+            current_status.as_str()
+        };
+        let max_days = gateway_policy_limit(global, class_policy, "max_expiry_days")?;
+        let created_at: DateTime<Utc> = row.try_get("created_at")?;
+        let policy_expiry = created_at
+            + Duration::days(i64::try_from(max_days).map_err(|_| ApplicationError::Internal)?);
+        let stored_expiry: Option<DateTime<Utc>> = row.try_get("expires_at")?;
+        let expires_at = stored_expiry.map_or(policy_expiry, |expiry| expiry.min(policy_expiry));
+        let scopes_changed = effective_scopes
+            .as_ref()
+            .is_some_and(|scopes| scopes != &stored_scopes);
+        let authority_changed = scopes_changed
+            || effective_routes != stored_routes
+            || status != current_status
+            || stored_expiry != Some(expires_at);
+        if authority_changed {
+            sqlx::query(
+                "UPDATE gateway_api_keys SET scopes=COALESCE($2,scopes),status=$3,
+                        expires_at=$4,etag_token=$5,updated_at=now() WHERE id=$1",
+            )
+            .bind(key_id)
+            .bind(
+                effective_scopes
+                    .as_ref()
+                    .map(|scopes| {
+                        serde_json::to_value(scopes).map_err(|_| ApplicationError::Internal)
+                    })
+                    .transpose()?,
+            )
+            .bind(status)
+            .bind(expires_at)
+            .bind(Uuid::now_v7())
+            .execute(&mut **transaction)
+            .await?;
+        }
+        if !effective_routes.is_empty() {
+            for route_id in stored_routes.difference(&effective_routes) {
+                sqlx::query(
+                    "DELETE FROM gateway_api_key_routes
+                     WHERE gateway_api_key_id=$1 AND route_id=$2",
+                )
+                .bind(key_id)
+                .bind(route_id.as_uuid())
+                .execute(&mut **transaction)
+                .await?;
+            }
+        }
+
+        let max_overlap = gateway_policy_limit(global, class_policy, "max_overlap_seconds")?;
+        let overlap = sqlx::query(
+            "SELECT id,created_at,overlap_until FROM gateway_api_key_secret_versions
+             WHERE gateway_api_key_id=$1 AND state='overlap' FOR UPDATE",
+        )
+        .bind(key_id)
+        .fetch_optional(&mut **transaction)
+        .await?;
+        if let Some(overlap) = overlap {
+            let version_id: Uuid = overlap.try_get("id")?;
+            let policy_until = overlap.try_get::<DateTime<Utc>, _>("created_at")?
+                + Duration::seconds(
+                    i64::try_from(max_overlap).map_err(|_| ApplicationError::Internal)?,
+                );
+            let stored_until: DateTime<Utc> = overlap.try_get("overlap_until")?;
+            let overlap_until = stored_until.min(policy_until);
+            if overlap_until <= Utc::now() {
+                sqlx::query(
+                    "UPDATE gateway_api_key_secret_versions
+                     SET state='retired',overlap_until=NULL,retired_at=now() WHERE id=$1",
+                )
+                .bind(version_id)
+                .execute(&mut **transaction)
+                .await?;
+            } else if overlap_until != stored_until {
+                sqlx::query(
+                    "UPDATE gateway_api_key_secret_versions SET overlap_until=$2 WHERE id=$1",
+                )
+                .bind(version_id)
+                .bind(overlap_until)
+                .execute(&mut **transaction)
+                .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn ensure_gateway_policies_fit_policy(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: OrganizationId,
+    policy: &Value,
+) -> Result<(), ApplicationError> {
+    let keys = sqlx::query(
+        "SELECT id,issuance_policy_class,budget_policy_id,rate_policy_id
+         FROM gateway_api_keys
+         WHERE organization_id=$1 AND status<>'revoked' FOR UPDATE",
+    )
+    .bind(organization_id.as_uuid())
+    .fetch_all(&mut **transaction)
+    .await?;
+    for key in keys {
+        let class: String = key.try_get("issuance_policy_class")?;
+        let global = gateway_policy_section(policy, "standard")?;
+        let class_policy = gateway_policy_section(policy, &class)?;
+        let budget_maximum = gateway_policy_nanos_limit(global, class_policy)?;
+        let budget_modes = gateway_policy_budget_modes(global)?
+            .intersection(&gateway_policy_budget_modes(class_policy)?)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let budget_policy_id: Uuid = key.try_get("budget_policy_id")?;
+        let budgets = sqlx::query(
+            "SELECT version.limit_cost_nanos::text AS limit_cost_nanos,version.mode
+             FROM gateway_key_budget_policies policy_row
+             JOIN budget_policy_versions version
+               ON version.id IN (policy_row.desired_version_id,policy_row.active_version_id)
+             WHERE policy_row.id=$1",
+        )
+        .bind(budget_policy_id)
+        .fetch_all(&mut **transaction)
+        .await?;
+        for budget in budgets {
+            let limit = budget
+                .try_get::<String, _>("limit_cost_nanos")?
+                .parse::<u128>()
+                .map_err(|_| ApplicationError::Internal)?;
+            let mode = parse_budget_mode(&budget.try_get::<String, _>("mode")?)?;
+            if limit > budget_maximum || !budget_modes.contains(&mode) {
+                return Err(ApplicationError::Conflict(
+                    "an existing Gateway-key budget exceeds the proposed organization policy"
+                        .to_owned(),
+                ));
+            }
+        }
+        if let Some(rate_policy_id) = key.try_get::<Option<Uuid>, _>("rate_policy_id")? {
+            let limits = sqlx::query(
+                "SELECT version.requests_per_minute,version.input_units_per_minute,
+                        version.concurrency_mode,version.concurrency_limit
+                 FROM gateway_key_rate_policies policy_row
+                 JOIN gateway_key_rate_policy_versions version
+                   ON version.id IN (policy_row.desired_version_id,policy_row.active_version_id)
+                 WHERE policy_row.id=$1",
+            )
+            .bind(rate_policy_id)
+            .fetch_all(&mut **transaction)
+            .await?;
+            let max_requests =
+                gateway_policy_limit(global, class_policy, "rate.max_requests_per_minute")?;
+            let max_input =
+                gateway_policy_limit(global, class_policy, "rate.max_input_units_per_minute")?;
+            let max_concurrency =
+                gateway_policy_limit(global, class_policy, "concurrency.max_limit")?;
+            let concurrency_modes = gateway_policy_concurrency_modes(global)?
+                .intersection(&gateway_policy_concurrency_modes(class_policy)?)
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            for limits in limits {
+                let requests = u64::try_from(limits.try_get::<i32, _>("requests_per_minute")?)
+                    .map_err(|_| ApplicationError::Internal)?;
+                let input = limits
+                    .try_get::<Option<i64>, _>("input_units_per_minute")?
+                    .map(u64::try_from)
+                    .transpose()
+                    .map_err(|_| ApplicationError::Internal)?;
+                let concurrency_mode: Option<String> = limits.try_get("concurrency_mode")?;
+                let concurrency = limits
+                    .try_get::<Option<i32>, _>("concurrency_limit")?
+                    .map(u64::try_from)
+                    .transpose()
+                    .map_err(|_| ApplicationError::Internal)?;
+                if requests > max_requests
+                    || input.is_some_and(|value| value > max_input)
+                    || concurrency.is_some_and(|value| value > max_concurrency)
+                    || concurrency_mode
+                        .as_ref()
+                        .is_some_and(|mode| !concurrency_modes.contains(mode))
+                {
+                    return Err(ApplicationError::Conflict(
+                        "existing Gateway-key request limits exceed the proposed organization policy"
+                            .to_owned(),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn gateway_policy_section<'a>(
+    policy: &'a Value,
+    class: &str,
+) -> Result<&'a Value, ApplicationError> {
+    let name = match class {
+        "standard" => "gateway",
+        "member_self_service" => "gateway_member_self_service",
+        _ => return Err(ApplicationError::Internal),
+    };
+    policy.get(name).ok_or(ApplicationError::Internal)
+}
+
+fn gateway_policy_enabled(section: &Value) -> Result<bool, ApplicationError> {
+    section["enabled"]
+        .as_bool()
+        .ok_or(ApplicationError::Internal)
+}
+
+fn gateway_policy_scopes(section: &Value) -> Result<LlmScopeSet, ApplicationError> {
+    serde_json::from_value(section["allowed_scopes"].clone())
+        .map_err(|_| ApplicationError::Internal)
+}
+
+fn scopes_from_policy_value(value: Value) -> Result<LlmScopeSet, ApplicationError> {
+    serde_json::from_value(value).map_err(|_| ApplicationError::Internal)
+}
+
+fn gateway_policy_routes(section: &Value) -> Result<BTreeSet<RouteId>, ApplicationError> {
+    serde_json::from_value::<Vec<RouteId>>(section["allowed_route_ids"].clone())
+        .map(|routes| routes.into_iter().collect())
+        .map_err(|_| ApplicationError::Internal)
+}
+
+fn gateway_policy_limit(
+    global: &Value,
+    class: &Value,
+    path: &str,
+) -> Result<u64, ApplicationError> {
+    let pointer = format!("/{}", path.replace('.', "/"));
+    let global = global
+        .pointer(&pointer)
+        .and_then(Value::as_u64)
+        .ok_or(ApplicationError::Internal)?;
+    let class = class
+        .pointer(&pointer)
+        .and_then(Value::as_u64)
+        .ok_or(ApplicationError::Internal)?;
+    Ok(global.min(class))
+}
+
+fn gateway_policy_nanos_limit(global: &Value, class: &Value) -> Result<u128, ApplicationError> {
+    let parse = |section: &Value| {
+        section["budget"]["max_limit_cost_nanos"]
+            .as_str()
+            .and_then(|value| value.parse::<u128>().ok())
+            .ok_or(ApplicationError::Internal)
+    };
+    Ok(parse(global)?.min(parse(class)?))
+}
+
+fn gateway_policy_budget_modes(section: &Value) -> Result<BTreeSet<BudgetMode>, ApplicationError> {
+    serde_json::from_value::<Vec<BudgetMode>>(section["budget"]["allowed_modes"].clone())
+        .map(|modes| modes.into_iter().collect())
+        .map_err(|_| ApplicationError::Internal)
+}
+
+fn gateway_policy_concurrency_modes(section: &Value) -> Result<BTreeSet<String>, ApplicationError> {
+    serde_json::from_value::<Vec<String>>(section["concurrency"]["allowed_modes"].clone())
+        .map(|modes| modes.into_iter().collect())
+        .map_err(|_| ApplicationError::Internal)
+}
+
+fn parse_budget_mode(value: &str) -> Result<BudgetMode, ApplicationError> {
+    match value {
+        "enforce" => Ok(BudgetMode::Enforce),
+        "record_only" => Ok(BudgetMode::RecordOnly),
+        _ => Err(ApplicationError::Internal),
+    }
+}
+
 fn validate_deployment_policy_shape(policy: &Value) -> Result<(), ApplicationError> {
     let Some(object) = policy.as_object() else {
         return Err(ApplicationError::Validation(
@@ -1814,11 +2173,207 @@ fn validate_policy_shape(policy: &Value) -> Result<(), ApplicationError> {
     } else {
         validate_disabled_member_policy_section(&policy["member_self_service"])?;
     }
-    if policy["gateway"]["enabled"] != false
-        || policy["gateway_member_self_service"]["enabled"] != false
+    validate_gateway_policy_section(&policy["gateway"], false)?;
+    validate_gateway_policy_section(&policy["gateway_member_self_service"], true)?;
+    if policy["gateway_member_self_service"]["enabled"] == true {
+        validate_gateway_policy_subset(&policy["gateway"], &policy["gateway_member_self_service"])?;
+    }
+    Ok(())
+}
+
+fn validate_gateway_policy_section(section: &Value, member: bool) -> Result<(), ApplicationError> {
+    let Some(object) = section.as_object() else {
+        return Err(ApplicationError::Validation(
+            "gateway key policy section must be an object".to_owned(),
+        ));
+    };
+    let expected = BTreeSet::from([
+        "enabled",
+        "allowed_scopes",
+        "allowed_capabilities",
+        "allowed_route_ids",
+        "max_active_keys",
+        "max_expiry_days",
+        "max_overlap_seconds",
+        "budget",
+        "rate",
+        "concurrency",
+    ]);
+    if object.keys().map(String::as_str).collect::<BTreeSet<_>>() != expected {
+        return Err(ApplicationError::Validation(
+            "gateway key policy section has unknown or missing fields".to_owned(),
+        ));
+    }
+    let enabled = section["enabled"].as_bool().ok_or_else(|| {
+        ApplicationError::Validation("gateway enabled must be boolean".to_owned())
+    })?;
+    let scopes =
+        serde_json::from_value::<Vec<crate::domain::LlmScope>>(section["allowed_scopes"].clone())
+            .map_err(|_| ApplicationError::Validation("allowed_scopes is invalid".to_owned()))?;
+    let unique_scopes = scopes.iter().copied().collect::<BTreeSet<_>>();
+    let capabilities = serde_json::from_value::<Vec<crate::domain::LlmFeatureCapability>>(
+        section["allowed_capabilities"].clone(),
+    )
+    .map_err(|_| ApplicationError::Validation("allowed_capabilities is invalid".to_owned()))?;
+    let unique_capabilities = capabilities.iter().copied().collect::<BTreeSet<_>>();
+    let routes =
+        serde_json::from_value::<Vec<crate::domain::RouteId>>(section["allowed_route_ids"].clone())
+            .map_err(|_| ApplicationError::Validation("allowed_route_ids is invalid".to_owned()))?;
+    let unique_routes = routes.iter().copied().collect::<BTreeSet<_>>();
+    let max_active = section["max_active_keys"].as_u64();
+    let max_expiry = section["max_expiry_days"].as_u64();
+    let max_overlap = section["max_overlap_seconds"].as_u64();
+    let budget = section["budget"].as_object().ok_or_else(|| {
+        ApplicationError::Validation("gateway budget ceiling must be an object".to_owned())
+    })?;
+    let max_budget = budget
+        .get("max_limit_cost_nanos")
+        .and_then(Value::as_str)
+        .and_then(|value| value.parse::<u128>().ok());
+    let modes = budget
+        .get("allowed_modes")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Vec<crate::domain::BudgetMode>>(value).ok());
+    let rate = section["rate"].as_object().ok_or_else(|| {
+        ApplicationError::Validation("gateway rate ceiling must be an object".to_owned())
+    })?;
+    let concurrency = section["concurrency"].as_object().ok_or_else(|| {
+        ApplicationError::Validation("gateway concurrency ceiling must be an object".to_owned())
+    })?;
+    if scopes.len() != unique_scopes.len()
+        || capabilities.len() != unique_capabilities.len()
+        || routes.len() != unique_routes.len()
+        || !max_active.is_some_and(|value| value <= 10_000)
+        || !max_expiry.is_some_and(|value| value <= 3_650)
+        || !max_overlap.is_some_and(|value| value <= 86_400)
+        || max_budget.is_none()
+        || modes.as_ref().is_none_or(|values| {
+            values.iter().copied().collect::<BTreeSet<_>>().len() != values.len()
+        })
+        || rate
+            .get("max_requests_per_minute")
+            .and_then(Value::as_u64)
+            .is_none()
+        || rate
+            .get("max_input_units_per_minute")
+            .and_then(Value::as_u64)
+            .is_none()
+        || concurrency
+            .get("max_limit")
+            .and_then(Value::as_u64)
+            .is_none()
+        || !concurrency
+            .get("allowed_modes")
+            .is_some_and(Value::is_array)
     {
         return Err(ApplicationError::Validation(
-            "gateway key issuance remains disabled until Module II".to_owned(),
+            "gateway key policy ceiling is invalid or outside supported bounds".to_owned(),
+        ));
+    }
+    if enabled
+        && (max_active == Some(0)
+            || max_expiry == Some(0)
+            || max_budget == Some(0)
+            || !unique_scopes.contains(&crate::domain::LlmScope::Invoke)
+            || unique_routes.is_empty()
+            || modes.as_ref().is_none_or(Vec::is_empty))
+    {
+        return Err(ApplicationError::Validation(
+            "enabled gateway key policy requires invoke scope, routes, keys, expiry, budget, and mode ceilings"
+                .to_owned(),
+        ));
+    }
+    if !enabled
+        && member
+        && (!unique_scopes.is_empty()
+            || !unique_capabilities.is_empty()
+            || !unique_routes.is_empty()
+            || max_active != Some(0)
+            || max_expiry != Some(0)
+            || max_overlap != Some(0)
+            || max_budget != Some(0))
+    {
+        return Err(ApplicationError::Validation(
+            "disabled gateway member self-service must have empty zero ceilings".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_gateway_policy_subset(global: &Value, member: &Value) -> Result<(), ApplicationError> {
+    for field in [
+        "allowed_scopes",
+        "allowed_capabilities",
+        "allowed_route_ids",
+    ] {
+        let global_values = global[field]
+            .as_array()
+            .ok_or(ApplicationError::Internal)?
+            .iter()
+            .map(Value::to_string)
+            .collect::<BTreeSet<_>>();
+        let member_values = member[field]
+            .as_array()
+            .ok_or(ApplicationError::Internal)?
+            .iter()
+            .map(Value::to_string)
+            .collect::<BTreeSet<_>>();
+        if !member_values.is_subset(&global_values) {
+            return Err(ApplicationError::Validation(format!(
+                "gateway_member_self_service.{field} must be a subset of gateway.{field}"
+            )));
+        }
+    }
+    for field in ["max_active_keys", "max_expiry_days", "max_overlap_seconds"] {
+        if member[field].as_u64().ok_or(ApplicationError::Internal)?
+            > global[field].as_u64().ok_or(ApplicationError::Internal)?
+        {
+            return Err(ApplicationError::Validation(format!(
+                "gateway_member_self_service.{field} cannot exceed gateway.{field}"
+            )));
+        }
+    }
+    let global_budget = global["budget"]["max_limit_cost_nanos"]
+        .as_str()
+        .and_then(|value| value.parse::<u128>().ok())
+        .ok_or(ApplicationError::Internal)?;
+    let member_budget = member["budget"]["max_limit_cost_nanos"]
+        .as_str()
+        .and_then(|value| value.parse::<u128>().ok())
+        .ok_or(ApplicationError::Internal)?;
+    if member_budget > global_budget {
+        return Err(ApplicationError::Validation(
+            "gateway member budget ceiling cannot exceed the global ceiling".to_owned(),
+        ));
+    }
+    let global_budget_modes = gateway_policy_budget_modes(global)?;
+    let member_budget_modes = gateway_policy_budget_modes(member)?;
+    if !member_budget_modes.is_subset(&global_budget_modes) {
+        return Err(ApplicationError::Validation(
+            "gateway member budget modes must be a subset of the global modes".to_owned(),
+        ));
+    }
+    for path in [
+        "rate.max_requests_per_minute",
+        "rate.max_input_units_per_minute",
+        "concurrency.max_limit",
+    ] {
+        if gateway_policy_limit(global, member, path)?
+            != member
+                .pointer(&format!("/{}", path.replace('.', "/")))
+                .and_then(Value::as_u64)
+                .ok_or(ApplicationError::Internal)?
+        {
+            return Err(ApplicationError::Validation(format!(
+                "gateway member {path} cannot exceed the global ceiling"
+            )));
+        }
+    }
+    let global_concurrency_modes = gateway_policy_concurrency_modes(global)?;
+    let member_concurrency_modes = gateway_policy_concurrency_modes(member)?;
+    if !member_concurrency_modes.is_subset(&global_concurrency_modes) {
+        return Err(ApplicationError::Validation(
+            "gateway member concurrency modes must be a subset of the global modes".to_owned(),
         ));
     }
     Ok(())
@@ -2192,6 +2747,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn gateway_member_policy_cannot_exceed_global_rate_or_mode_ceilings() {
+        let policy = crate::application::resources::default_organization_api_key_policy();
+        let global = policy["gateway"].clone();
+        let mut member = global.clone();
+        member["rate"]["max_requests_per_minute"] =
+            json!(global["rate"]["max_requests_per_minute"].as_u64().unwrap() + 1);
+        assert!(validate_gateway_policy_subset(&global, &member).is_err());
+
+        let mut member = global.clone();
+        member["concurrency"]["allowed_modes"] = json!(["approximate", "strict"]);
+        let mut narrowed_global = global;
+        narrowed_global["concurrency"]["allowed_modes"] = json!(["strict"]);
+        assert!(validate_gateway_policy_subset(&narrowed_global, &member).is_err());
+    }
+
+    #[test]
     fn organization_keys_cannot_request_operations_scope() {
         let scopes =
             ManagementScopeSet::new([ManagementScope::Read, ManagementScope::Operations]).unwrap();
@@ -2250,9 +2821,18 @@ mod tests {
             generation: Arc::new(RuntimeGeneration {
                 snapshot: Arc::new(RuntimeSnapshot {
                     revision: 0,
+                    security_revision: 0,
                     built_at: Utc::now(),
+                    compatibility_registry_version: 1,
+                    gateway_policy_ceilings: crate::runtime::GatewayPolicyCeilingsSnapshot::default(
+                    ),
                     identity: IdentitySnapshot::default(),
+                    gateway_keys: std::collections::HashMap::new(),
+                    organizations: std::collections::HashMap::new(),
+                    policy_activations: std::collections::HashMap::new(),
+                    catalog: crate::runtime::CatalogSnapshot::default(),
                 }),
+                credential_clients: Arc::new(crate::runtime::CredentialClientRegistry::default()),
             }),
             request_id: "test-request".to_owned(),
             csrf_validated: true,

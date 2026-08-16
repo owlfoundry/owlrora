@@ -331,6 +331,7 @@ export function ManagementKeyCreatePage({ scope, me }: { scope: KeyScope; me: Cu
         requestId={outcomeUnknown.requestId}
         recoveryHref={browserBase(scope)}
         committed={outcomeUnknown.committed}
+        oneTimeMaterial
       />
     );
   }
@@ -755,6 +756,7 @@ export function ManagementKeyRotatePage({ scope, keyId }: { scope: KeyScope; key
         requestId={outcomeUnknown.requestId}
         recoveryHref={`${browserBase(scope)}/${encodeURIComponent(keyId)}`}
         committed={outcomeUnknown.committed}
+        oneTimeMaterial
       />
     );
   }
@@ -847,7 +849,8 @@ export function ManagementKeyRotatePage({ scope, keyId }: { scope: KeyScope; key
             </span>
           </label>
           <SubmitBar
-            submitting={submitting || !confirmed}
+            submitting={submitting}
+            disabled={!confirmed}
             submitLabel="Rotate key"
             cancelHref={`${browserBase(scope)}/${encodeURIComponent(keyId)}`}
           />

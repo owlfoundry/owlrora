@@ -151,12 +151,20 @@ pub enum Capability {
     ManageSystemOrganizations,
     ManageSystemUsers,
     ManageAdministrators,
+    ManageGatewayCatalog,
+    ReadGatewayKeys,
+    CreateGatewayKeys,
+    ManageGatewayKeys,
+    ManageByok,
+    ConfigureRoutes,
+    ConfigureBudgets,
+    ReadUsage,
     ReadOperations,
     RecoverOperations,
 }
 
 impl Capability {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 26] = [
         Self::SystemAdministration,
         Self::ReadOrganization,
         Self::UpdateOrganization,
@@ -173,6 +181,14 @@ impl Capability {
         Self::ManageSystemOrganizations,
         Self::ManageSystemUsers,
         Self::ManageAdministrators,
+        Self::ManageGatewayCatalog,
+        Self::ReadGatewayKeys,
+        Self::CreateGatewayKeys,
+        Self::ManageGatewayKeys,
+        Self::ManageByok,
+        Self::ConfigureRoutes,
+        Self::ConfigureBudgets,
+        Self::ReadUsage,
         Self::ReadOperations,
         Self::RecoverOperations,
     ];
@@ -196,6 +212,14 @@ impl Capability {
             Self::ManageSystemOrganizations => "manage_system_organizations",
             Self::ManageSystemUsers => "manage_system_users",
             Self::ManageAdministrators => "manage_administrators",
+            Self::ManageGatewayCatalog => "manage_gateway_catalog",
+            Self::ReadGatewayKeys => "read_gateway_keys",
+            Self::CreateGatewayKeys => "create_gateway_keys",
+            Self::ManageGatewayKeys => "manage_gateway_keys",
+            Self::ManageByok => "manage_byok",
+            Self::ConfigureRoutes => "configure_routes",
+            Self::ConfigureBudgets => "configure_budgets",
+            Self::ReadUsage => "read_usage",
             Self::ReadOperations => "read_operations",
             Self::RecoverOperations => "recover_operations",
         }

@@ -18,8 +18,9 @@ use crate::{
     adapters::postgres::{AuditRecord, RuntimeEvent},
     domain::{
         Actor, AuthenticatedPrincipal, AuthenticationMethod, Capability, CapabilityClaimPolicy,
-        ClaimMapping, IssuerId, IssuerStatus, JwksSource, ManagementOrganizationCeiling,
-        ManagementScope, ManagementScopeSet, Principal, ResourceScope,
+        ClaimMapping, IssuerId, IssuerStatus, JwksSource, JwtRouteCeiling,
+        ManagementOrganizationCeiling, ManagementScope, ManagementScopeSet, Principal,
+        ResourceScope, RouteId,
     },
     runtime::{ExternalIssuerSnapshot, RuntimeGeneration},
 };
@@ -139,13 +140,14 @@ impl Application {
                 id, name, display_name, issuer, status, jwks_source,
                 current_verifier_material_version_id, allowed_algorithms,
                 accepted_audiences, subject_claim, claim_mapping, jwt_capability_ceiling,
-                management_scope_ceiling, management_organization_ceiling,
+                management_scope_ceiling, management_capability_ceiling,
+                management_organization_ceiling, llm_scope_ceiling, llm_capability_ceiling,
                 capability_claim_policy, jwt_route_ceiling, organization_selector,
                 provisioning_policy_id, browser_login, clock_skew_seconds, key_cache_policy,
                 created_by_principal, etag_token
              ) VALUES (
                 $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
-                $20,$21,$22,$23
+                $20,$21,$22,$23,$24,$25,$26
              )",
         )
         .bind(issuer_id.as_uuid())
@@ -161,7 +163,10 @@ impl Application {
         .bind(to_json(&input.claim_mapping)?)
         .bind(to_json(&input.jwt_capability_ceiling)?)
         .bind(to_json(&input.management_scope_ceiling)?)
+        .bind(to_json(&input.management_capability_ceiling)?)
         .bind(to_json(&input.management_organization_ceiling)?)
+        .bind(to_json(&input.llm_scope_ceiling)?)
+        .bind(to_json(&input.llm_capability_ceiling)?)
         .bind(input.capability_claim_policy.as_str())
         .bind(to_json(&input.jwt_route_ceiling)?)
         .bind(to_json(&input.organization_selector)?)
@@ -246,7 +251,10 @@ impl Application {
             && input.claim_mapping.is_omitted()
             && input.jwt_capability_ceiling.is_omitted()
             && input.management_scope_ceiling.is_omitted()
+            && input.management_capability_ceiling.is_omitted()
             && input.management_organization_ceiling.is_omitted()
+            && input.llm_scope_ceiling.is_omitted()
+            && input.llm_capability_ceiling.is_omitted()
             && input.capability_claim_policy.is_omitted()
             && input.jwt_route_ceiling.is_omitted()
             && input.organization_selector.is_omitted()
@@ -263,7 +271,10 @@ impl Application {
             && input.claim_mapping.is_omitted()
             && input.jwt_capability_ceiling.is_omitted()
             && input.management_scope_ceiling.is_omitted()
+            && input.management_capability_ceiling.is_omitted()
             && input.management_organization_ceiling.is_omitted()
+            && input.llm_scope_ceiling.is_omitted()
+            && input.llm_capability_ceiling.is_omitted()
             && input.capability_claim_policy.is_omitted()
             && input.jwt_route_ceiling.is_omitted()
             && input.organization_selector.is_omitted()
@@ -288,7 +299,10 @@ impl Application {
             claim_mapping: current.claim_mapping.clone(),
             jwt_capability_ceiling: current.jwt_capability_ceiling.clone(),
             management_scope_ceiling: current.management_scope_ceiling.clone(),
+            management_capability_ceiling: current.management_capability_ceiling.clone(),
             management_organization_ceiling: current.management_organization_ceiling.clone(),
+            llm_scope_ceiling: current.llm_scope_ceiling.clone(),
+            llm_capability_ceiling: current.llm_capability_ceiling.clone(),
             capability_claim_policy: current.capability_claim_policy,
             jwt_route_ceiling: current.jwt_route_ceiling.clone(),
             organization_selector: current.organization_selector.clone(),
@@ -335,9 +349,24 @@ impl Application {
             "management_scope_ceiling",
         )?;
         apply_required(
+            &mut candidate.management_capability_ceiling,
+            input.management_capability_ceiling,
+            "management_capability_ceiling",
+        )?;
+        apply_required(
             &mut candidate.management_organization_ceiling,
             input.management_organization_ceiling,
             "management_organization_ceiling",
+        )?;
+        apply_required(
+            &mut candidate.llm_scope_ceiling,
+            input.llm_scope_ceiling,
+            "llm_scope_ceiling",
+        )?;
+        apply_required(
+            &mut candidate.llm_capability_ceiling,
+            input.llm_capability_ceiling,
+            "llm_capability_ceiling",
         )?;
         apply_required(
             &mut candidate.capability_claim_policy,
@@ -454,10 +483,11 @@ impl Application {
                 current_verifier_material_version_id=COALESCE($5,current_verifier_material_version_id),
                 allowed_algorithms=$6, accepted_audiences=$7, subject_claim=$8,
                 claim_mapping=$9, jwt_capability_ceiling=$10, management_scope_ceiling=$11,
-                management_organization_ceiling=$12, capability_claim_policy=$13,
-                jwt_route_ceiling=$14, organization_selector=$15, provisioning_policy_id=$16,
-                browser_login=$17, clock_skew_seconds=$18, key_cache_policy=$19,
-                policy_version=policy_version+1, etag_token=$20, updated_at=now()
+                management_capability_ceiling=$12, management_organization_ceiling=$13,
+                llm_scope_ceiling=$14, llm_capability_ceiling=$15,
+                capability_claim_policy=$16, jwt_route_ceiling=$17, organization_selector=$18,
+                provisioning_policy_id=$19, browser_login=$20, clock_skew_seconds=$21,
+                key_cache_policy=$22, policy_version=policy_version+1, etag_token=$23, updated_at=now()
              WHERE id=$1",
         )
         .bind(issuer_id.as_uuid())
@@ -471,7 +501,10 @@ impl Application {
         .bind(to_json(&candidate.claim_mapping)?)
         .bind(to_json(&candidate.jwt_capability_ceiling)?)
         .bind(to_json(&candidate.management_scope_ceiling)?)
+        .bind(to_json(&candidate.management_capability_ceiling)?)
         .bind(to_json(&candidate.management_organization_ceiling)?)
+        .bind(to_json(&candidate.llm_scope_ceiling)?)
+        .bind(to_json(&candidate.llm_capability_ceiling)?)
         .bind(candidate.capability_claim_policy.as_str())
         .bind(to_json(&candidate.jwt_route_ceiling)?)
         .bind(to_json(&candidate.organization_selector)?)
@@ -633,6 +666,14 @@ impl Application {
             return Err(ApplicationError::Forbidden);
         }
         Ok(())
+    }
+
+    pub(crate) fn verify_external_jwt_evidence_for_gateway(
+        &self,
+        raw_token: &str,
+        generation: &RuntimeGeneration,
+    ) -> Result<(IssuerId, String, Value), ApplicationError> {
+        self.verify_external_jwt_evidence(raw_token, generation)
     }
 
     pub(crate) fn verify_external_jwt_evidence(
@@ -1024,7 +1065,8 @@ const ISSUER_SELECT: &str =
             i.current_verifier_material_version_id, i.allowed_algorithms,
             i.accepted_audiences, i.subject_claim, i.claim_mapping,
             i.jwt_capability_ceiling, i.management_scope_ceiling,
-            i.management_organization_ceiling, i.capability_claim_policy,
+            i.management_capability_ceiling, i.management_organization_ceiling,
+            i.llm_scope_ceiling, i.llm_capability_ceiling, i.capability_claim_policy,
             i.jwt_route_ceiling, i.organization_selector, i.provisioning_policy_id,
             i.browser_login, i.clock_skew_seconds, i.key_cache_policy, i.policy_version,
             i.etag_token, i.created_at, i.updated_at
@@ -1074,9 +1116,12 @@ fn issuer_from_row(
         claim_mapping: from_json(row.try_get("claim_mapping")?)?,
         jwt_capability_ceiling: from_json(row.try_get("jwt_capability_ceiling")?)?,
         management_scope_ceiling: from_json(row.try_get("management_scope_ceiling")?)?,
+        management_capability_ceiling: from_json(row.try_get("management_capability_ceiling")?)?,
         management_organization_ceiling: from_json(
             row.try_get("management_organization_ceiling")?,
         )?,
+        llm_scope_ceiling: from_json(row.try_get("llm_scope_ceiling")?)?,
+        llm_capability_ceiling: from_json(row.try_get("llm_capability_ceiling")?)?,
         capability_claim_policy: serde_json::from_value(Value::String(
             row.try_get("capability_claim_policy")?,
         ))
@@ -1151,9 +1196,19 @@ fn validate_issuer_input(input: &CreateExternalIdentityIssuer) -> Result<(), App
             "key_cache_policy is outside supported bounds".to_owned(),
         ));
     }
+    if input
+        .jwt_capability_ceiling
+        .iter()
+        .any(|capability| !matches!(capability.as_str(), "management:access" | "llm:access"))
+    {
+        return Err(ApplicationError::Validation(
+            "jwt_capability_ceiling contains an unknown access class".to_owned(),
+        ));
+    }
     let management_enabled = input.jwt_capability_ceiling.contains("management:access");
     if management_enabled
         && (input.management_scope_ceiling.iter().next().is_none()
+            || input.management_capability_ceiling.is_empty()
             || matches!(
                 input.management_organization_ceiling,
                 ManagementOrganizationCeiling::None
@@ -1163,9 +1218,33 @@ fn validate_issuer_input(input: &CreateExternalIdentityIssuer) -> Result<(), App
             "management access requires explicit scope and organization ceilings".to_owned(),
         ));
     }
-    if !management_enabled && input.management_scope_ceiling.iter().next().is_some() {
+    if !management_enabled
+        && (input.management_scope_ceiling.iter().next().is_some()
+            || !input.management_capability_ceiling.is_empty())
+    {
         return Err(ApplicationError::Validation(
-            "management scopes require management:access".to_owned(),
+            "management scopes and capabilities require management:access".to_owned(),
+        ));
+    }
+    let llm_enabled = input.jwt_capability_ceiling.contains("llm:access");
+    if llm_enabled != input.llm_scope_ceiling.as_scopes().is_some() {
+        return Err(ApplicationError::Validation(
+            "LLM access requires a non-empty explicit LLM scope ceiling".to_owned(),
+        ));
+    }
+    if !llm_enabled
+        && (!input.llm_capability_ceiling.is_empty()
+            || !matches!(
+                input.jwt_route_ceiling,
+                crate::domain::JwtRouteCeiling::None
+            )
+            || !matches!(
+                input.organization_selector,
+                crate::domain::OrganizationSelector::None
+            ))
+    {
+        return Err(ApplicationError::Validation(
+            "LLM capability, route, and organization ceilings require llm:access".to_owned(),
         ));
     }
     if let ManagementOrganizationCeiling::Organizations { organization_ids } =
@@ -1176,14 +1255,36 @@ fn validate_issuer_input(input: &CreateExternalIdentityIssuer) -> Result<(), App
             "organization ceiling cannot contain an empty exact set".to_owned(),
         ));
     }
-    if input.capability_claim_policy == CapabilityClaimPolicy::RequiredNarrowing
-        && input.claim_mapping.management_scopes_claim.is_none()
-        && input.claim_mapping.management_capabilities_claim.is_none()
-        && input.claim_mapping.organizations_claim.is_none()
+    if input.capability_claim_policy == CapabilityClaimPolicy::RequiredNarrowing {
+        let management_mapping = input.claim_mapping.management_scopes_claim.is_some()
+            || input.claim_mapping.management_capabilities_claim.is_some()
+            || input.claim_mapping.organizations_claim.is_some();
+        let llm_mapping = input.claim_mapping.llm_scopes_claim.is_some()
+            || input.claim_mapping.llm_capabilities_claim.is_some()
+            || input.claim_mapping.routes_claim.is_some()
+            || input.claim_mapping.organizations_claim.is_some();
+        if (management_enabled && !management_mapping) || (llm_enabled && !llm_mapping) {
+            return Err(ApplicationError::Validation(
+                "required claim narrowing needs a typed mapping for every enabled access class"
+                    .to_owned(),
+            ));
+        }
+    }
+    if let JwtRouteCeiling::Routes { route_ids } = &input.jwt_route_ceiling
+        && (route_ids.is_empty()
+            || route_ids
+                .iter()
+                .any(|route_id| route_id.parse::<RouteId>().is_err()))
     {
         return Err(ApplicationError::Validation(
-            "required claim narrowing needs at least one typed claim mapping".to_owned(),
+            "route ceiling must contain non-empty valid route IDs".to_owned(),
         ));
+    }
+    match &input.organization_selector {
+        crate::domain::OrganizationSelector::SignedClaim { claim }
+        | crate::domain::OrganizationSelector::Either { claim } => validate_claim_name(claim)?,
+        crate::domain::OrganizationSelector::None | crate::domain::OrganizationSelector::Header => {
+        }
     }
     if let Some(profile) = &input.browser_login {
         if !management_enabled
@@ -1207,6 +1308,9 @@ fn validate_claim_mapping(mapping: &ClaimMapping) -> Result<(), ApplicationError
     for claim in [
         mapping.management_scopes_claim.as_deref(),
         mapping.management_capabilities_claim.as_deref(),
+        mapping.llm_scopes_claim.as_deref(),
+        mapping.llm_capabilities_claim.as_deref(),
+        mapping.routes_claim.as_deref(),
         mapping.organizations_claim.as_deref(),
         mapping.display_name_claim.as_deref(),
         mapping.email_claim.as_deref(),
@@ -1539,10 +1643,13 @@ fn issuer_snapshot_as_validation_input(
         claim_mapping: snapshot.claim_mapping.clone(),
         jwt_capability_ceiling: snapshot.jwt_capability_ceiling.clone(),
         management_scope_ceiling: snapshot.management_scopes.clone(),
+        management_capability_ceiling: snapshot.management_capabilities.clone(),
         management_organization_ceiling: snapshot.management_organization_ceiling.clone(),
+        llm_scope_ceiling: snapshot.llm_scopes.clone(),
+        llm_capability_ceiling: snapshot.llm_capabilities.clone(),
         capability_claim_policy: snapshot.capability_claim_policy,
-        jwt_route_ceiling: crate::domain::JwtRouteCeiling::None,
-        organization_selector: crate::domain::OrganizationSelector::None,
+        jwt_route_ceiling: snapshot.llm_routes.clone(),
+        organization_selector: snapshot.organization_selector.clone(),
         provisioning_policy_id: None,
         browser_login: snapshot.browser_login.clone(),
         clock_skew_seconds: snapshot.clock_skew_seconds,
@@ -1663,7 +1770,10 @@ mod tests {
             claim_mapping: ClaimMapping::default(),
             jwt_capability_ceiling: BTreeSet::from(["management:access".to_owned()]),
             management_scope_ceiling: ManagementScopeSet::empty(),
+            management_capability_ceiling: BTreeSet::new(),
             management_organization_ceiling: ManagementOrganizationCeiling::None,
+            llm_scope_ceiling: crate::domain::LlmScopeCeiling::denied(),
+            llm_capability_ceiling: BTreeSet::new(),
             capability_claim_policy: CapabilityClaimPolicy::Ignore,
             jwt_route_ceiling: JwtRouteCeiling::None,
             organization_selector: OrganizationSelector::None,

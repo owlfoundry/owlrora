@@ -22,7 +22,7 @@ flowchart TB
     Custom --> N2
 ```
 
-Control-plane, data-plane, secret-controller, and background-worker roles share code and domain contracts. Deployment profiles may disable roles on selected replicas without creating a distinct service architecture.
+Control-plane, data-plane, secret-controller, and background-worker roles share code and domain contracts. Deployment profiles may disable roles on selected replicas without creating a distinct service architecture. The server exposes five role profiles: `full` enables every role and surface; `management` enables management/auth/console, secret-controller commands, publication and activation workers but no LLM surface; `gateway` enables LLM, runtime publication, allowance/state/health/usage workers but no management/auth/console or seed authentication; `worker` exposes no management/console/LLM surface and runs bounded controllers/workers; `health-only` exposes only `/health`. Management-enabled profiles alone require `OWLRORA_PUBLIC_ORIGIN` and `OWLRORA_SEED_ADMIN_API_KEY`. Every profile that opens database-managed upstream material requires the configured custody authority.
 
 ## 2. Deployment profiles
 
@@ -301,7 +301,7 @@ Redis, optional custom custody, OTel, and individual upstream health do not auto
 - one endpoint affects only dependent deployments/routes;
 - collector failure affects export only.
 
-A node that cannot load any required startup credential because its environment root is missing/wrong or custom custody cannot open it remains unready according to configured required-route policy.
+A Gateway-serving node that cannot load any required startup credential because its environment root is missing/wrong or custom custody cannot open it remains unready according to its configured required-route policy. `OWLRORA_REQUIRED_ROUTE_IDS` is an optional comma-separated set of exact stable route UUIDs; each named route must compile from the current generation with at least one structurally and operationally usable credential client before readiness succeeds. An absent set imposes no fleet-specific required route and still requires a coherent generation inside security-age bounds. Unknown, malformed, unauthorized-scope, disabled, or zero-client required routes fail startup/readiness rather than being ignored.
 
 ## 13. Startup and shutdown
 

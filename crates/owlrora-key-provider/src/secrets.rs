@@ -95,6 +95,14 @@ pub struct SealedSecret {
 }
 
 /// Object-safe custom-provider capability for sealing configuration secrets.
+///
+/// `OwlRora` keeps provider I/O outside `PostgreSQL` transactions. Concurrent requests or retries
+/// can therefore invoke [`ConfigurationSecretSealer::seal`] more than once for the same protection
+/// context and plaintext before one database command wins. Implementations must make such calls
+/// safe to repeat and must treat every returned envelope as independently discardable until
+/// `OwlRora` persists it. A seal call must not allocate an external durable resource that requires a
+/// compensating delete when its envelope is not selected. Provider audit or billing events may be
+/// duplicated.
 #[async_trait]
 pub trait ConfigurationSecretSealer: Send + Sync {
     fn provider_id(&self) -> ProviderId;

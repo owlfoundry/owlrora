@@ -9,7 +9,10 @@ use axum::{
 use serde_json::json;
 
 use crate::{
-    application::AuditQuery,
+    application::{
+        AuditQuery, CleanupStateOrigins, CreateCoordinatorRecoveries, ProbeTargets,
+        UsageBreakdownQuery, UsageQuery,
+    },
     domain::{OrganizationId, SessionId},
 };
 
@@ -22,7 +25,7 @@ use crate::http::{
         require_command_security, session_cookie_header,
     },
     descriptor::openapi_document,
-    extract::{CallbackQuery, LoginQuery, PageQuery},
+    extract::{ApiJson, CallbackQuery, LoginQuery, PageQuery},
 };
 
 pub async fn ready(State(state): State<HttpState>) -> Response {
@@ -239,6 +242,64 @@ pub async fn organization_audit(
         .map_err(|error| app_error(error, &identity))
 }
 
+pub async fn organization_usage(
+    State(state): State<HttpState>,
+    Path(organization_id): Path<OrganizationId>,
+    Query(query): Query<UsageQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let identity = authenticate(&state.application, &headers).await?;
+    state
+        .application
+        .get_organization_usage(&identity, organization_id, &query)
+        .await
+        .map(json_response)
+        .map_err(|error| app_error(error, &identity))
+}
+
+pub async fn organization_usage_breakdown(
+    State(state): State<HttpState>,
+    Path(organization_id): Path<OrganizationId>,
+    Query(query): Query<UsageBreakdownQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let identity = authenticate(&state.application, &headers).await?;
+    state
+        .application
+        .get_organization_usage_breakdown(&identity, organization_id, &query)
+        .await
+        .map(json_response)
+        .map_err(|error| app_error(error, &identity))
+}
+
+pub async fn system_usage(
+    State(state): State<HttpState>,
+    Query(query): Query<UsageQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let identity = authenticate(&state.application, &headers).await?;
+    state
+        .application
+        .get_system_usage(&identity, &query)
+        .await
+        .map(json_response)
+        .map_err(|error| app_error(error, &identity))
+}
+
+pub async fn system_usage_breakdown(
+    State(state): State<HttpState>,
+    Query(query): Query<UsageBreakdownQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let identity = authenticate(&state.application, &headers).await?;
+    state
+        .application
+        .get_system_usage_breakdown(&identity, &query)
+        .await
+        .map(json_response)
+        .map_err(|error| app_error(error, &identity))
+}
+
 pub async fn operations_readiness(
     State(state): State<HttpState>,
     ConnectInfo(source): ConnectInfo<SocketAddr>,
@@ -250,7 +311,7 @@ pub async fn operations_readiness(
         .application
         .operations_readiness(&identity)
         .await
-        .map(json_response)
+        .map(|value| no_store(json_response(value)))
         .map_err(|error| app_error(error, &identity))
 }
 
@@ -267,7 +328,7 @@ macro_rules! operations_view_handler {
                 .application
                 .operations_view(&identity, $view)
                 .await
-                .map(json_response)
+                .map(|value| no_store(json_response(value)))
                 .map_err(|error| app_error(error, &identity))
         }
     };
@@ -277,8 +338,40 @@ operations_view_handler!(operations_overview, "overview");
 operations_view_handler!(operations_runtime, "runtime");
 operations_view_handler!(operations_coordination, "coordination");
 operations_view_handler!(operations_recoveries, "recoveries");
+operations_view_handler!(operations_activations, "activations");
+operations_view_handler!(operations_state_origins, "state-origins");
+operations_view_handler!(operations_upstream_credentials, "upstream-credentials");
 operations_view_handler!(operations_secret_custody, "secret-custody");
 operations_view_handler!(operations_telemetry, "telemetry");
+
+pub async fn operations_target_health(
+    State(state): State<HttpState>,
+    ConnectInfo(source): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let identity = authenticate(&state.application, &headers).await?;
+    require_operator_source(&state, source, &identity)?;
+    state
+        .application
+        .operations_target_health(&identity)
+        .map(|value| no_store(json_response(value)))
+        .map_err(|error| app_error(error, &identity))
+}
+
+pub async fn operations_usage_pipeline(
+    State(state): State<HttpState>,
+    ConnectInfo(source): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let identity = authenticate(&state.application, &headers).await?;
+    require_operator_source(&state, source, &identity)?;
+    state
+        .application
+        .operations_usage_pipeline(&identity)
+        .await
+        .map(|value| no_store(json_response(value)))
+        .map_err(|error| app_error(error, &identity))
+}
 
 pub async fn reconcile_runtime(
     State(state): State<HttpState>,
@@ -292,7 +385,128 @@ pub async fn reconcile_runtime(
         .application
         .reconcile_runtime(&identity)
         .await
-        .map(json_response)
+        .map(|value| no_store(json_response(value)))
+        .map_err(|error| app_error(error, &identity))
+}
+
+pub async fn create_coordinator_recoveries(
+    State(state): State<HttpState>,
+    ConnectInfo(source): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    ApiJson(input): ApiJson<CreateCoordinatorRecoveries>,
+) -> Result<Response, ApiError> {
+    let identity = authenticate(&state.application, &headers).await?;
+    require_operator_source(&state, source, &identity)?;
+    require_command_security(&state.application, &identity, &headers)?;
+    reject_idempotency_key(&headers, &identity)?;
+    state
+        .application
+        .create_coordinator_recoveries(&identity, &input)
+        .await
+        .map(|value| no_store(json_response(value)))
+        .map_err(|error| app_error(error, &identity))
+}
+
+pub async fn reconcile_policy_activations(
+    State(state): State<HttpState>,
+    ConnectInfo(source): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let identity = authenticate(&state.application, &headers).await?;
+    require_operator_source(&state, source, &identity)?;
+    require_command_security(&state.application, &identity, &headers)?;
+    reject_idempotency_key(&headers, &identity)?;
+    state
+        .application
+        .reconcile_policy_activations_now(&identity)
+        .await
+        .map(|value| no_store(json_response(value)))
+        .map_err(|error| app_error(error, &identity))
+}
+
+pub async fn cleanup_state_origins(
+    State(state): State<HttpState>,
+    ConnectInfo(source): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    ApiJson(input): ApiJson<CleanupStateOrigins>,
+) -> Result<Response, ApiError> {
+    let identity = authenticate(&state.application, &headers).await?;
+    require_operator_source(&state, source, &identity)?;
+    require_command_security(&state.application, &identity, &headers)?;
+    reject_idempotency_key(&headers, &identity)?;
+    state
+        .application
+        .cleanup_state_origins(&identity, &input)
+        .await
+        .map(|value| no_store(json_response(value)))
+        .map_err(|error| app_error(error, &identity))
+}
+
+pub async fn reconcile_upstream_credentials(
+    State(state): State<HttpState>,
+    ConnectInfo(source): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let identity = authenticate(&state.application, &headers).await?;
+    require_operator_source(&state, source, &identity)?;
+    require_command_security(&state.application, &identity, &headers)?;
+    reject_idempotency_key(&headers, &identity)?;
+    state
+        .application
+        .reconcile_upstream_credentials(&identity)
+        .await
+        .map(|value| no_store(json_response(value)))
+        .map_err(|error| app_error(error, &identity))
+}
+
+pub async fn probe_targets(
+    State(state): State<HttpState>,
+    ConnectInfo(source): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    ApiJson(input): ApiJson<ProbeTargets>,
+) -> Result<Response, ApiError> {
+    let identity = authenticate(&state.application, &headers).await?;
+    require_operator_source(&state, source, &identity)?;
+    require_command_security(&state.application, &identity, &headers)?;
+    reject_idempotency_key(&headers, &identity)?;
+    state
+        .application
+        .probe_targets_now(&identity, &input)
+        .await
+        .map(|value| no_store(json_response(value)))
+        .map_err(|error| app_error(error, &identity))
+}
+
+pub async fn flush_usage_pipeline(
+    State(state): State<HttpState>,
+    ConnectInfo(source): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let identity = authenticate(&state.application, &headers).await?;
+    require_operator_source(&state, source, &identity)?;
+    require_command_security(&state.application, &identity, &headers)?;
+    reject_idempotency_key(&headers, &identity)?;
+    state
+        .application
+        .flush_usage_pipeline(&identity)
+        .await
+        .map(|value| no_store(json_response(value)))
+        .map_err(|error| app_error(error, &identity))
+}
+
+pub async fn reconcile_codex_refresh_leases(
+    State(state): State<HttpState>,
+    ConnectInfo(source): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let identity = authenticate(&state.application, &headers).await?;
+    require_operator_source(&state, source, &identity)?;
+    require_command_security(&state.application, &identity, &headers)?;
+    state
+        .application
+        .reconcile_codex_refresh_leases(&identity)
+        .await
+        .map(|value| no_store(json_response(value)))
         .map_err(|error| app_error(error, &identity))
 }
 
@@ -308,7 +522,7 @@ pub async fn cleanup_identity_state(
         .application
         .cleanup_expired_identity_state(&identity)
         .await
-        .map(|changed| json_response(json!({"changed":changed})))
+        .map(|changed| no_store(json_response(json!({"changed":changed}))))
         .map_err(|error| app_error(error, &identity))
 }
 

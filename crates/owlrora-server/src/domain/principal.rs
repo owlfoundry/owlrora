@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Capability, IssuerId, KeyId, ManagementScopeSet, OrganizationId, ResourceScope, SessionId,
-    UserId,
+    Capability, GatewayKeyId, IssuerId, KeyId, ManagementScopeSet, OrganizationId, ResourceScope,
+    SessionId, UserId,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -21,6 +21,10 @@ pub enum Principal {
         organization_id: OrganizationId,
         management_api_key_id: KeyId,
     },
+    OrganizationGatewayApiKey {
+        organization_id: OrganizationId,
+        gateway_api_key_id: GatewayKeyId,
+    },
 }
 
 impl Principal {
@@ -36,6 +40,9 @@ impl Principal {
                 management_api_key_id,
                 ..
             } => management_api_key_id.to_string(),
+            Self::OrganizationGatewayApiKey {
+                gateway_api_key_id, ..
+            } => gateway_api_key_id.to_string(),
         }
     }
 }
@@ -47,6 +54,7 @@ pub enum AuthenticationMethod {
     ManagementApiKeySession,
     ExternalSession,
     ExternalJwt,
+    GatewayApiKey,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

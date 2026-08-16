@@ -31,7 +31,7 @@ An `UpstreamCredential` is an independently managed secret or workload-identity 
 | Field | Meaning |
 | --- | --- |
 | `id`, `name` | stable identity and unique label within resource scope |
-| `scope` | immutable `system` or exactly one `organization_id` |
+| `scope` | immutable `deployment` or exactly one `organization_id` |
 | `created_by_principal` | immutable audit attribution; never owner or ongoing authority |
 | `credential_kind` | exact typed authentication contract |
 | `secret_source` | encrypted PostgreSQL value, environment reference, mounted-file reference, or workload-identity configuration |
@@ -52,7 +52,7 @@ Credential kinds include:
 - `google_application_default` and `google_service_account`;
 - typed Azure API-key or workload-identity credentials.
 
-There is no generic arbitrary-header template accepting unreviewed secret injection. A credential kind defines exactly which adapter families may use it and how upstream authentication is rebuilt.
+There is no generic arbitrary-header template accepting unreviewed secret injection. A credential kind defines exactly which adapter families may use it and how upstream authentication is rebuilt. `aws_default_chain` and `google_application_default` use `workload_identity` with an exact empty source configuration: the server runs the respective standard environment, file/profile, command or external-account, and metadata provider chain. `aws_assume_role` uses its typed role configuration and the AWS default chain as its source provider. Static service-account material remains a distinct `google_service_account` credential.
 
 A system credential may be referenced by multiple deployments and endpoints when adapter compatibility and tenant-sharing rules permit it. An organization BYOK credential is owned by exactly one organization, is never system-shared or granted to another organization, and may be referenced only by same-organization deployments. Because a credential normally represents the upstream account/project/quota identity, its scope/sharing policy—not the network URL or creator—controls where it may serve. Secret rotation increments `secret_version` and rebuilds every dependent client without changing deployment or route identity. A confirmed account/project/security-domain change increments `state_identity_version`; routine access-token refresh that preserves the same confirmed account does not. Secret replacement preserves the state identity only when the typed adapter can prove the immutable upstream account/project identity is unchanged; otherwise it increments conservatively.
 
@@ -110,10 +110,10 @@ Explicit endpoints are system-administrator resources and must:
 - reject userinfo, URL ambiguity, and uncontrolled redirects;
 - enforce DNS/IP checks against private, loopback, link-local, metadata, and organization-internal ranges unless system policy permits them;
 - revalidate resolved addresses at connection time;
-- apply bounded TLS, proxy, connection, body, and redirect policy;
+- apply bounded TLS, direct-connection, body, and redirect policy;
 - prevent caller input from selecting host, scheme, project, region, or credentials.
 
-Endpoint configuration cannot turn the data plane into an SSRF proxy.
+Endpoint configuration cannot turn the data plane into an SSRF proxy. `proxy_url` is reserved and must remain null in this version: HTTP CONNECT resolves the destination at the proxy and would bypass OwlRora's target-address enforcement. Proxy support requires a future explicit trust/enforcement contract rather than silently weakening DNS and address policy.
 
 ## 4. Transport kinds
 
@@ -131,18 +131,36 @@ A `TransportKind` identifies the exact upstream wire contract. Representative ki
 - `google_gemini_generate_content`;
 - `google_vertex_generate_content`.
 
-The adapter registry validates `(endpoint.adapter_kind, credential.credential_kind, transport_kind)`. A combination exists only when protocol fixtures cover endpoint construction, authentication, request/stream behavior, errors, usage, and cancellation. Adapter behavior ships with the running OwlRora build rather than creating a separately managed compatibility-profile catalog.
+The adapter registry validates `(endpoint.adapter_kind, credential.credential_kind, transport_kind)`. Version 1 contains exactly these combinations:
+
+| Endpoint adapter | Credential kinds | Transport kind |
+| --- | --- | --- |
+| `anthropic_api` | `static_api_key` | `anthropic_messages_native` |
+| `aws_bedrock_runtime` | `aws_default_chain`, `aws_assume_role` | `anthropic_messages_bedrock` |
+| `google_vertex` | `google_application_default`, `google_service_account` | `anthropic_messages_vertex` |
+| `openai_api` | `static_api_key` | `openai_chat_completions` |
+| `openai_api` | `static_api_key` | `openai_responses_http` |
+| `openai_api` | `static_api_key` | `openai_responses_websocket` |
+| `openai_codex` | `oauth_openai_codex` | `openai_codex_responses` |
+| `azure_openai` | `azure_api_key`, `azure_workload_identity` | `azure_openai_chat_completions` |
+| `azure_openai` | `azure_api_key`, `azure_workload_identity` | `azure_openai_responses` |
+| `google_gemini_api` | `static_api_key`, `google_application_default`, `google_service_account` | `google_gemini_generate_content` |
+| `google_vertex` | `google_application_default`, `google_service_account` | `google_vertex_generate_content` |
+
+For `google_gemini_api`, `static_api_key` has an adapter-owned Google API-key injection policy; Google workload credentials use the exact OAuth audience/scopes owned by that adapter. `openai_codex_responses` is HTTP/SSE only in version 1. There is no Codex WebSocket tuple.
+
+A combination exists only when protocol fixtures cover endpoint construction, authentication, request/stream behavior, errors, usage, and cancellation. Adapter behavior ships with the running OwlRora build rather than creating a separately managed compatibility-profile catalog. Adding a credential variant or WebSocket mode is a registry and fixture change; a managed row cannot invent it.
 
 “OpenAI compatible” is not a transport contract by itself.
 
 ## 5. Model deployments
 
-A `ModelDeployment` is one callable upstream model binding. Its immutable resource scope also derives its accounting origin: `system` becomes `system_provided`, while one exact organization becomes `organization_byok`. No route, caller, or key can override that origin.
+A `ModelDeployment` is one callable upstream model binding. Its immutable resource scope also derives its accounting origin: `deployment` becomes `system_provided`, while one exact organization becomes `organization_byok`. No route, caller, or key can override that origin.
 
 | Field | Meaning |
 | --- | --- |
 | `id`, `name` | stable identity and label within resource scope |
-| `scope` | immutable `system` or exactly one `organization_id` |
+| `scope` | immutable `deployment` or exactly one `organization_id` |
 | `created_by_principal` | immutable audit attribution for organization deployments |
 | `endpoint_id` | one system-owned upstream network profile |
 | `credential_id` | one compatible authentication identity |
@@ -196,9 +214,10 @@ A `ModelRoute` is the client-addressable model and routing policy.
 | Field | Meaning |
 | --- | --- |
 | `id` | immutable opaque identity |
-| `scope` | system or one organization |
+| `scope` | deployment or one organization |
 | `owner_user_id` | required for organization-owned routes |
-| `model_key` | exact client-facing key unique in scope and protocol family |
+| `owner_membership_id` | exact active membership selected at create/transfer; prevents leave/rejoin from silently restoring authority |
+| `model_key` | exact client-facing key unique in scope and protocol family, including drafts and disabled routes |
 | `ingress_protocol_family` | one native request contract |
 | `required_base_capabilities` | contract every target must satisfy |
 | `selection_policy` | priority, integer weights, affinity, algorithm version |
@@ -221,9 +240,9 @@ For one organization and protocol family:
 
 A system route is visible to an organization only through an `OrganizationRouteGrant`. The grant may narrow capabilities, output/context ceilings, availability, and policy ceilings but cannot add targets or reveal upstream credentials.
 
-Advanced tenants may create organization routes from explicitly granted system deployments, same-organization BYOK deployments, and granted reliability policies. They may mix both deployment origins in one route and choose route-local targets, priorities, and weights. System and BYOK targets participate in the same capability filtering, health, weighting, affinity, retry, failover, streaming, continuation, and observability behavior; OwlRora does not reduce BYOK to a separate direct-provider shortcut. Only attempt accounting differs: a Gateway-key attempt always consumes the key's overall budget and then the organization origin pool derived from the selected deployment. Organization owners/admins—and members only when explicit self-service policy allows—may create/replace organization BYOK credentials and create organization deployments, but they cannot change system endpoints, transports, egress policy, system health ceilings, or another scope's secret material. BYOK resources remain organization-owned when their creator leaves.
+Advanced tenants may create organization routes from explicitly granted system deployments, same-organization BYOK deployments, and granted reliability policies. A system-route grant exposes the complete system route and its targets without separately granting those deployments for that route. A composed organization route instead needs an organization deployment grant for each system deployment target; each same-organization deployment already proves its own endpoint grant. A system reliability policy needs its separate reliability-policy grant. Route, deployment, endpoint, and reliability grants never imply one another. Advanced tenants may mix both deployment origins in one route and choose route-local targets, priorities, and weights. System and BYOK targets participate in the same capability filtering, health, weighting, affinity, retry, failover, streaming, continuation, and observability behavior; OwlRora does not reduce BYOK to a separate direct-provider shortcut. Only attempt accounting differs: a Gateway-key attempt always consumes the key's overall budget and then the organization origin pool derived from the selected deployment. Organization owners/admins—and members only when explicit self-service policy allows—may create/replace organization BYOK credentials and create organization deployments, but they cannot change system endpoints, transports, egress policy, system health ceilings, or another scope's secret material. BYOK resources remain organization-owned when their creator leaves.
 
-Organization-route create always names one eligible active-member `owner_user_id`; an acting Management-key/system-administrator principal cannot be substituted or fabricated as that owner. Ownership can be transferred only to another eligible active member through an explicit audited command that requires the current route ETag. Removal of the current owner's membership disables new route admission until ownership is resolved.
+Organization-route create always names one eligible active-member `owner_user_id` and stores that exact `owner_membership_id`; an acting Management-key/system-administrator principal cannot be substituted or fabricated as that owner. Ownership can be transferred only to another eligible active membership through an explicit audited command that requires the current route ETag. Removal of the bound membership disables new route admission until ownership is explicitly transferred. A later membership for the same user has a different identity and never silently restores admission.
 
 ## 8. Route targets
 

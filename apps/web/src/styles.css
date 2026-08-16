@@ -640,6 +640,32 @@ textarea:hover {
   gap: 0 16px;
   align-items: end;
 }
+.editor-form .form-grid {
+  align-items: start;
+}
+.schema-field {
+  min-width: 0;
+  margin-bottom: 16px;
+  padding: 12px;
+  background: #fafbfc;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.schema-field:has(textarea) {
+  grid-column: span 2;
+}
+.field-presence {
+  margin-bottom: 4px;
+  color: var(--secondary);
+  font-size: 12px;
+}
+.confirmation-row {
+  margin: 16px 0;
+  padding: 12px;
+  background: #fffaf0;
+  border: 1px solid #e8d2a9;
+  border-radius: 5px;
+}
 .field-actions {
   justify-content: end;
 }

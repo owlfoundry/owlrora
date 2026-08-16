@@ -1,9 +1,11 @@
 mod auth_routes;
+mod catalog;
 mod identity;
 mod keys;
 mod tenancy;
 
 pub use auth_routes::*;
+pub use catalog::*;
 pub use identity::*;
 pub use keys::*;
 pub use tenancy::*;

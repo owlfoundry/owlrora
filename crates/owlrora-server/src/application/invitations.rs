@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
 use rand::RngCore as _;
@@ -9,8 +11,8 @@ use uuid::Uuid;
 use crate::{
     adapters::postgres::{AuditRecord, RuntimeEvent},
     domain::{
-        Actor, Capability, InvitationId, ManagementScope, OrganizationId, OrganizationRole,
-        Principal, UserId,
+        Actor, Capability, InvitationId, JwtRouteCeiling, LlmScope, ManagementScope,
+        OrganizationId, OrganizationRole, Principal, RouteId, UserId,
     },
 };
 
@@ -41,6 +43,7 @@ impl Application {
         let (cursor, limit) = super::resources::page_parameters(&family, cursor, limit)?;
         let rows = sqlx::query(
             "SELECT id, organization_id, intended_email, intended_role, llm_scope_ceiling,
+                    llm_capability_ceiling, llm_route_ceiling,
                     state, expires_at, accepted_by_user_id, created_at, updated_at
              FROM invitations
              WHERE organization_id=$1 AND ($2::uuid IS NULL OR id < $2)
@@ -106,6 +109,7 @@ impl Application {
             ));
         }
         validate_llm_scopes(&input.llm_scope_ceiling)?;
+        validate_route_ceiling(&input.llm_route_ceiling)?;
         let (token, digest) = generate_invitation_token();
         let invitation_id = InvitationId::new();
         let mut transaction = self.store.begin().await?;
@@ -124,8 +128,9 @@ impl Application {
         sqlx::query(
             "INSERT INTO invitations(
                 id, organization_id, intended_email, intended_role, llm_scope_ceiling,
+                llm_capability_ceiling, llm_route_ceiling,
                 token_digest, state, expires_at, created_by_principal, etag_token
-             ) VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9)",
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10,$11)",
         )
         .bind(invitation_id.as_uuid())
         .bind(organization_id.as_uuid())
@@ -133,6 +138,14 @@ impl Application {
         .bind(role_str(input.intended_role))
         .bind(
             serde_json::to_value(&input.llm_scope_ceiling)
+                .map_err(|_| ApplicationError::Internal)?,
+        )
+        .bind(
+            serde_json::to_value(&input.llm_capability_ceiling)
+                .map_err(|_| ApplicationError::Internal)?,
+        )
+        .bind(
+            serde_json::to_value(&input.llm_route_ceiling)
                 .map_err(|_| ApplicationError::Internal)?,
         )
         .bind(digest.to_vec())
@@ -153,7 +166,13 @@ impl Application {
                     organization_id,
                     invitation_id,
                     "organizations.invitations.create",
-                    &["intended_role", "expires_at"],
+                    &[
+                        "intended_role",
+                        "llm_scope_ceiling",
+                        "llm_capability_ceiling",
+                        "llm_route_ceiling",
+                        "expires_at",
+                    ],
                 ),
                 Some(&RuntimeEvent {
                     event_kind: "invitation.changed".to_owned(),
@@ -296,7 +315,8 @@ impl Application {
         let digest = parse_invitation_token(&input.token)?;
         let mut transaction = self.store.begin().await?;
         let row = sqlx::query(
-            "SELECT id, organization_id, intended_role, llm_scope_ceiling, state, expires_at
+            "SELECT id, organization_id, intended_role, llm_scope_ceiling,
+                    llm_capability_ceiling, llm_route_ceiling, state, expires_at
              FROM invitations WHERE token_digest=$1 FOR UPDATE",
         )
         .bind(digest.to_vec())
@@ -321,17 +341,21 @@ impl Application {
             ))?;
         let role: String = row.try_get("intended_role")?;
         let scopes: serde_json::Value = row.try_get("llm_scope_ceiling")?;
+        let llm_capabilities: serde_json::Value = row.try_get("llm_capability_ceiling")?;
+        let llm_routes: serde_json::Value = row.try_get("llm_route_ceiling")?;
         sqlx::query(
             "INSERT INTO memberships(
                 id, organization_id, user_id, role, status, llm_scope_ceiling,
-                etag_token, created_by_principal
-             ) VALUES ($1,$2,$3,$4,'active',$5,$6,$7)",
+                llm_capability_ceiling, llm_route_ceiling, etag_token, created_by_principal
+             ) VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8,$9)",
         )
         .bind(Uuid::now_v7())
         .bind(organization_id.as_uuid())
         .bind(user_id.as_uuid())
         .bind(role)
         .bind(scopes)
+        .bind(llm_capabilities)
+        .bind(llm_routes)
         .bind(Uuid::now_v7())
         .bind(
             serde_json::to_value(Actor::from(&identity.principal))
@@ -419,6 +443,7 @@ async fn load_invitation<'executor>(
 ) -> Result<Invitation, ApplicationError> {
     let row = sqlx::query(
         "SELECT id, organization_id, intended_email, intended_role, llm_scope_ceiling,
+                llm_capability_ceiling, llm_route_ceiling,
                 state, expires_at, accepted_by_user_id, created_at, updated_at
          FROM invitations WHERE organization_id=$1 AND id=$2",
     )
@@ -437,6 +462,10 @@ fn invitation_from_row(row: sqlx::postgres::PgRow) -> Result<Invitation, Applica
         intended_email: row.try_get("intended_email")?,
         intended_role: parse_role(&row.try_get::<String, _>("intended_role")?)?,
         llm_scope_ceiling: serde_json::from_value(row.try_get("llm_scope_ceiling")?)
+            .map_err(|_| ApplicationError::Internal)?,
+        llm_capability_ceiling: serde_json::from_value(row.try_get("llm_capability_ceiling")?)
+            .map_err(|_| ApplicationError::Internal)?,
+        llm_route_ceiling: serde_json::from_value(row.try_get("llm_route_ceiling")?)
             .map_err(|_| ApplicationError::Internal)?,
         state: row.try_get("state")?,
         expires_at: row.try_get("expires_at")?,
@@ -490,23 +519,38 @@ const fn role_str(role: OrganizationRole) -> &'static str {
 }
 
 fn validate_llm_scopes(scopes: &[String]) -> Result<(), ApplicationError> {
-    const ALLOWED: &[&str] = &[
-        "llm:invoke",
-        "llm:stream",
-        "llm:tools",
-        "llm:multimodal-input",
-        "llm:structured-output",
-    ];
-    if scopes
+    let parsed = scopes
         .iter()
-        .any(|scope| !ALLOWED.contains(&scope.as_str()))
-    {
-        Err(ApplicationError::Validation(
-            "llm_scope_ceiling contains an unknown scope".to_owned(),
-        ))
-    } else {
-        Ok(())
+        .map(|scope| scope.parse::<LlmScope>())
+        .collect::<Result<BTreeSet<_>, _>>()
+        .map_err(|_| {
+            ApplicationError::Validation("llm_scope_ceiling contains an unknown scope".to_owned())
+        })?;
+    if parsed.len() != scopes.len() {
+        return Err(ApplicationError::Validation(
+            "llm_scope_ceiling contains duplicate scopes".to_owned(),
+        ));
     }
+    if !parsed.is_empty() && !parsed.contains(&LlmScope::Invoke) {
+        return Err(ApplicationError::Validation(
+            "a non-empty llm_scope_ceiling must contain llm:invoke".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_route_ceiling(ceiling: &JwtRouteCeiling) -> Result<(), ApplicationError> {
+    if let JwtRouteCeiling::Routes { route_ids } = ceiling
+        && (route_ids.is_empty()
+            || route_ids
+                .iter()
+                .any(|route_id| route_id.parse::<RouteId>().is_err()))
+    {
+        return Err(ApplicationError::Validation(
+            "an exact route ceiling must contain valid route IDs; use kind=none to deny".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -518,5 +562,18 @@ mod tests {
         let (token, digest) = generate_invitation_token();
         assert_eq!(parse_invitation_token(&token).unwrap(), digest);
         assert!(parse_invitation_token("owlrora_invitation_v1.AA=").is_err());
+    }
+
+    #[test]
+    fn invitation_llm_ceilings_reject_incomplete_or_empty_exact_values() {
+        assert!(validate_llm_scopes(&[]).is_ok());
+        assert!(validate_llm_scopes(&["llm:stream".to_owned()]).is_err());
+        assert!(
+            validate_route_ceiling(&JwtRouteCeiling::Routes {
+                route_ids: BTreeSet::new(),
+            })
+            .is_err()
+        );
+        assert!(validate_route_ceiling(&JwtRouteCeiling::None).is_ok());
     }
 }

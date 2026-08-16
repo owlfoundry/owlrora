@@ -80,7 +80,7 @@ The origin budgets are collective across all Gateway API keys in the organizatio
 | `system_provided` | attempts using granted system deployments | system administrator assigns a limit to the exact organization |
 | `organization_byok` | attempts using same-organization BYOK deployments | organization owner/admin configures its own limit within deployment ceilings |
 
-A system administrator may also configure the BYOK ceiling but does not become the owner of BYOK credentials. Organization actors may read the effective system-provided allocation and its state but cannot expand or reset it. A key creator has no special budget authority.
+A system administrator may also configure the BYOK ceiling but does not become the owner of BYOK credentials. Organization actors may read the effective system-provided allocation and its state but cannot expand or reset it. A key creator has no special budget authority. Creating an organization also creates both stable origin-policy rows in `suspended` state with no active version. The initial state is an explicit deny until the appropriate authority publishes a finite version; a missing row after initialization is an integrity fault, not an unlimited policy.
 
 Stable policy resources are typed rather than inferred from a generic scope string:
 
@@ -120,7 +120,7 @@ BudgetPolicyVersion {
 
 Every active Gateway key references exactly one key budget policy with a finite limit and epoch. A Gateway-key attempt also requires an active policy for its derived organization/origin pair. Absence, suspension, or an unready enforcing policy makes that target budget-ineligible; routing may try another eligible target. A `record_only` policy keeps its finite limit as an operational threshold but never denies or requires coordinator allowance. It reports threshold crossing, unknown-cost exposure, and aggregate lag explicitly.
 
-Policy payloads are immutable versions. A pending desired version never overwrites the still-active payload; activation moves the stable policy pointer only after the matching coordinator generation is staged and armed without retiring the prior active generation. Coordinator-backed rate and strict-concurrency policies use the same handshake.
+Policy payloads are immutable versions. A pending desired version never overwrites the still-active payload; activation moves the stable policy pointer only after the matching coordinator generation is staged and armed without retiring the prior active generation. Coordinator-backed rate and strict-concurrency policies use the same handshake. A `record_only` version changing from another `record_only` version activates durably without Redis because it grants no spend authority. Any transition to or from `enforce`, and every coordinator-backed rate or strict-concurrency generation, uses staged/armed activation.
 
 An `epoch_id` is an opaque accounting interval controlled externally. OwlRora does not schedule billing resets. Management operations distinguish:
 
@@ -236,7 +236,7 @@ The new Redis counter starts with only `allowance_authorized`, not the apparent 
 
 ### 7.3 Policy activation and generation
 
-Every coordinator-backed budget, rate, or strict-concurrency policy has a durable `PolicyActivation` record:
+Every coordinator-backed budget or combined Gateway-key request-limits policy has a durable `PolicyActivation` record. Its identity is the pair `(policy_kind, policy_id)`; the policy kind selects exactly one budget or request-limits table and prevents ambiguous cross-family IDs:
 
 ```text
 PolicyActivation {

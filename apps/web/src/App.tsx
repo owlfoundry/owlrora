@@ -22,6 +22,16 @@ import {
   UserEditPage,
   UsersPage,
 } from "./admin-resource-pages";
+import {
+  CatalogResourceCreatePage,
+  CatalogResourceDetailPage,
+  CatalogResourceEditPage,
+  CatalogResourceListPage,
+  CodexLoginPage,
+  CredentialReplaceSecretPage,
+  SingletonPolicyEditPage,
+  SingletonPolicyPage,
+} from "./catalog-pages";
 import { AuditPage, OperationsPage } from "./evidence-pages";
 import {
   IdentityBindingCreatePage,
@@ -36,6 +46,18 @@ import {
   ProvisioningPolicyDetailPage,
   ProvisioningPolicyEditPage,
 } from "./identity-pages";
+import {
+  CatalogGrantsPage,
+  GatewayKeyBudgetPage,
+  GatewayKeyCreatePage,
+  GatewayKeyDetailPage,
+  GatewayKeyEditPage,
+  GatewayKeyLimitsPage,
+  GatewayKeyListPage,
+  GatewayKeyRotatePage,
+  ProviderBudgetEditPage,
+  ProviderBudgetsPage,
+} from "./gateway-pages";
 import {
   KeyPolicyEditPage,
   KeyPolicyPage,
@@ -70,6 +92,7 @@ import {
   SignedOutPage,
   SignInPage,
 } from "./session-pages";
+import { UsagePage } from "./usage-pages";
 import {
   ApiErrorState,
   Link,
@@ -200,12 +223,32 @@ function navigation(match: RouteMatch, me: CurrentPrincipal): NavGroup[] {
         ],
       },
       {
+        label: "Upstream catalog",
+        items: [
+          { label: "Egress policies", href: "/admin/catalog/egress-network-policies" },
+          { label: "Credentials", href: "/admin/catalog/credentials" },
+          { label: "Endpoints", href: "/admin/catalog/endpoints" },
+          { label: "Deployments", href: "/admin/catalog/deployments" },
+          { label: "Model routes", href: "/admin/catalog/model-routes" },
+          { label: "Pricing policies", href: "/admin/catalog/pricing-policies" },
+          { label: "Reliability policies", href: "/admin/catalog/reliability-policies" },
+          { label: "Gateway policy ceilings", href: "/admin/catalog/gateway-policy-ceilings" },
+        ],
+      },
+      {
         label: "Operations",
         items: [
+          { label: "Usage", href: "/admin/usage" },
           { label: "Overview", href: "/admin/operations" },
           { label: "Readiness", href: "/admin/operations/readiness" },
           { label: "Runtime", href: "/admin/operations/runtime" },
           { label: "Coordination", href: "/admin/operations/coordination" },
+          { label: "Recoveries", href: "/admin/operations/coordination/recoveries" },
+          { label: "Activations", href: "/admin/operations/coordination/activations" },
+          { label: "State origins", href: "/admin/operations/state-origins" },
+          { label: "Credential controllers", href: "/admin/operations/upstream-credentials" },
+          { label: "Target health", href: "/admin/operations/target-health" },
+          { label: "Usage pipeline", href: "/admin/operations/usage-pipeline" },
           { label: "Secret custody", href: "/admin/operations/secret-custody" },
           { label: "Telemetry", href: "/admin/operations/telemetry" },
         ],
@@ -223,10 +266,26 @@ function navigation(match: RouteMatch, me: CurrentPrincipal): NavGroup[] {
           { label: "Overview", href: base },
           { label: "Members", href: `${base}/members` },
           { label: "Invitations", href: `${base}/invitations` },
-          { label: "Management API keys", href: `${base}/management-api-keys` },
-          { label: "API key policy", href: `${base}/api-key-policy` },
           { label: "Audit", href: `${base}/audit` },
           { label: "Settings", href: `${base}/settings` },
+        ],
+      },
+      {
+        label: "Gateway access",
+        items: [
+          { label: "Gateway API keys", href: `${base}/gateway-api-keys` },
+          { label: "Management API keys", href: `${base}/management-api-keys` },
+          { label: "API key policy", href: `${base}/api-key-policy` },
+          { label: "Provider budgets", href: `${base}/provider-budgets` },
+        ],
+      },
+      {
+        label: "Upstream catalog",
+        items: [
+          { label: "BYOK credentials", href: `${base}/upstream-credentials` },
+          { label: "Model deployments", href: `${base}/model-deployments` },
+          { label: "Model routes", href: `${base}/model-routes` },
+          { label: "Usage", href: `${base}/usage` },
         ],
       },
     ];
@@ -456,6 +515,73 @@ function organizationKeyScope(match: RouteMatch): KeyScope {
 
 function RouteContent({ match, me }: { match: RouteMatch; me: CurrentPrincipal }) {
   const p = match.params;
+  const pathSegments = match.route.path.split("/");
+  const catalogFamily = pathSegments[3];
+  const genericAdminCatalog =
+    match.route.id.startsWith("admin-catalog-") &&
+    !match.route.id.startsWith("admin-catalog-credential-replace") &&
+    !match.route.id.startsWith("admin-catalog-credential-codex") &&
+    !match.route.id.startsWith("admin-catalog-gateway-policy-ceilings");
+  if (genericAdminCatalog) {
+    if (match.route.id.endsWith("-new"))
+      return <CatalogResourceCreatePage scope="system" family={catalogFamily} />;
+    if (match.route.id.endsWith("-edit"))
+      return (
+        <CatalogResourceEditPage scope="system" family={catalogFamily} resourceId={p.resource_id} />
+      );
+    if (match.route.id.endsWith("-detail"))
+      return (
+        <CatalogResourceDetailPage
+          scope="system"
+          family={catalogFamily}
+          resourceId={p.resource_id}
+          me={me}
+        />
+      );
+    return <CatalogResourceListPage scope="system" family={catalogFamily} me={me} />;
+  }
+  const genericOrganizationCatalog =
+    match.route.context === "organization" &&
+    ["upstream-credentials", "model-deployments", "model-routes"].includes(catalogFamily) &&
+    match.route.id !== "organization-upstream-credential-replace-secret";
+  if (genericOrganizationCatalog) {
+    const organizationCatalogResourceId = p.credential_id ?? p.deployment_id ?? p.route_id;
+    if (match.route.id.endsWith("-new"))
+      return (
+        <CatalogResourceCreatePage
+          scope="organization"
+          family={catalogFamily}
+          organizationId={p.organization_id}
+        />
+      );
+    if (match.route.id.endsWith("-edit"))
+      return (
+        <CatalogResourceEditPage
+          scope="organization"
+          family={catalogFamily}
+          organizationId={p.organization_id}
+          resourceId={organizationCatalogResourceId}
+        />
+      );
+    if (match.route.id.endsWith("-detail"))
+      return (
+        <CatalogResourceDetailPage
+          scope="organization"
+          family={catalogFamily}
+          organizationId={p.organization_id}
+          resourceId={organizationCatalogResourceId}
+          me={me}
+        />
+      );
+    return (
+      <CatalogResourceListPage
+        scope="organization"
+        family={catalogFamily}
+        organizationId={p.organization_id}
+        me={me}
+      />
+    );
+  }
   switch (match.route.id) {
     case "profile":
       return <ProfilePage me={me} />;
@@ -472,6 +598,52 @@ function RouteContent({ match, me }: { match: RouteMatch; me: CurrentPrincipal }
       return <MemberDetailPage organizationId={p.organization_id} userId={p.user_id} me={me} />;
     case "organization-invitations":
       return <InvitationsPage organizationId={p.organization_id} me={me} />;
+    case "organization-gateway-keys":
+      return <GatewayKeyListPage organizationId={p.organization_id} me={me} />;
+    case "organization-gateway-key-new":
+      return <GatewayKeyCreatePage organizationId={p.organization_id} />;
+    case "organization-gateway-key-detail":
+      return (
+        <GatewayKeyDetailPage
+          organizationId={p.organization_id}
+          keyId={p.gateway_api_key_id}
+          me={me}
+        />
+      );
+    case "organization-gateway-key-edit":
+      return <GatewayKeyEditPage organizationId={p.organization_id} keyId={p.gateway_api_key_id} />;
+    case "organization-gateway-key-budget":
+      return (
+        <GatewayKeyBudgetPage organizationId={p.organization_id} keyId={p.gateway_api_key_id} />
+      );
+    case "organization-gateway-key-limits":
+      return (
+        <GatewayKeyLimitsPage organizationId={p.organization_id} keyId={p.gateway_api_key_id} />
+      );
+    case "organization-gateway-key-rotate":
+      return (
+        <GatewayKeyRotatePage organizationId={p.organization_id} keyId={p.gateway_api_key_id} />
+      );
+    case "organization-upstream-credential-replace-secret":
+      return (
+        <CredentialReplaceSecretPage
+          scope="organization"
+          organizationId={p.organization_id}
+          credentialId={p.credential_id}
+        />
+      );
+    case "organization-provider-budgets":
+      return <ProviderBudgetsPage organizationId={p.organization_id} me={me} />;
+    case "organization-provider-budget-byok-edit":
+      return (
+        <ProviderBudgetEditPage
+          organizationId={p.organization_id}
+          origin="byok"
+          returnHref={`/organizations/${encodeURIComponent(p.organization_id)}/provider-budgets`}
+        />
+      );
+    case "organization-usage":
+      return <UsagePage organizationId={p.organization_id} />;
     case "organization-management-keys":
       return <ManagementKeyListPage scope={organizationKeyScope(match)} me={me} />;
     case "organization-management-key-new":
@@ -524,6 +696,16 @@ function RouteContent({ match, me }: { match: RouteMatch; me: CurrentPrincipal }
       return <AdminOrganizationDetailPage organizationId={p.organization_id} me={me} />;
     case "admin-organization-edit":
       return <AdminOrganizationEditPage organizationId={p.organization_id} />;
+    case "admin-organization-catalog-grants":
+      return <CatalogGrantsPage organizationId={p.organization_id} />;
+    case "admin-organization-system-provider-budget":
+      return (
+        <ProviderBudgetEditPage
+          organizationId={p.organization_id}
+          origin="system"
+          returnHref={`/admin/organizations/${encodeURIComponent(p.organization_id)}`}
+        />
+      );
     case "admin-management-keys":
       return <ManagementKeyListPage scope={{ kind: "system" }} me={me} />;
     case "admin-management-key-new":
@@ -568,6 +750,30 @@ function RouteContent({ match, me }: { match: RouteMatch; me: CurrentPrincipal }
       return <ProvisioningPolicyDetailPage policyId={p.policy_id} me={me} />;
     case "admin-provisioning-policy-edit":
       return <ProvisioningPolicyEditPage policyId={p.policy_id} />;
+    case "admin-catalog-credential-replace-secret":
+      return <CredentialReplaceSecretPage scope="system" credentialId={p.credential_id} />;
+    case "admin-catalog-credential-codex-login":
+      return <CodexLoginPage credentialId={p.credential_id} sessionId={p.login_session_id} />;
+    case "admin-catalog-gateway-policy-ceilings":
+      return (
+        <SingletonPolicyPage
+          operationFamily="system.gateway_policy_ceilings"
+          title="Gateway policy ceilings"
+          description="Deployment-wide singleton bounds for Gateway-key budgets and request-limit grants."
+          editHref="/admin/catalog/gateway-policy-ceilings/edit"
+          me={me}
+        />
+      );
+    case "admin-catalog-gateway-policy-ceilings-edit":
+      return (
+        <SingletonPolicyEditPage
+          operationFamily="system.gateway_policy_ceilings"
+          title="Gateway policy ceilings"
+          returnHref="/admin/catalog/gateway-policy-ceilings"
+        />
+      );
+    case "admin-usage":
+      return <UsagePage />;
     case "admin-audit":
       return <AuditPage />;
     default:

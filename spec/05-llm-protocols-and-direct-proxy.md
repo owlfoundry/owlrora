@@ -25,18 +25,26 @@ Provider-hosted variants may adapt URL, authentication, signing, envelope, and f
 | OpenAI Responses | `POST /v1/responses` | yes | SSE |
 | Google Gemini | `POST /v1beta/models/{model}:generateContent` | yes | no |
 | Google Gemini | `POST /v1beta/models/{model}:streamGenerateContent?alt=sse` | no | SSE |
-| OpenAI Responses | reviewed WebSocket endpoint | no | WebSocket when the deployment advertises it |
+| OpenAI Responses | `GET /v1/responses` with WebSocket Upgrade | no | WebSocket when the deployment advertises it |
 
-A compatibility claim names the endpoint, protocol version range, streaming mode, and tested feature set. Path similarity never implies complete vendor API compatibility. Model listing, files, batches, embeddings, fine-tuning, and token-counting APIs are separate capabilities and are not implied.
+Gemini streaming requires exactly one `alt=sse` query value. A missing, duplicate, or different `alt` value is rejected rather than silently changing response framing. The OpenAI Responses WebSocket endpoint uses the same `/v1/responses` resource with an HTTP WebSocket upgrade, no OwlRora-required subprotocol, and the version-1 Responses frame contract covered by the running build's fixtures.
+
+The version-1 ingress contract is Anthropic Messages with `anthropic-version: 2023-06-01`, OpenAI Chat Completions and Responses v1 JSON/SSE shapes, Gemini `v1beta` GenerateContent JSON/SSE shapes, and the fixture-backed OpenAI Responses WebSocket frame set. A compatibility claim names the endpoint, this protocol contract, streaming mode, and its tested feature set. Additive native fields are accepted only under the unknown-field rules below; a changed semantic or framing contract requires an explicit registry/version update. Path similarity never implies complete vendor API compatibility. Model listing, files, batches, embeddings, fine-tuning, and token-counting APIs are separate capabilities and are not implied.
 
 ## 3. Client authentication and header boundary
 
 Compatibility endpoints accept:
 
-- an OwlRora gateway API key in the protocol’s documented credential location; or
+- an OwlRora gateway API key in the protocol's exact credential location; or
 - a trusted JWT that resolves a local user and is authorized for `llm:invoke` in the selected organization.
 
-Gateway-key prefixes and JWT structure make supported credential forms unambiguous. Conflicting credential locations are rejected. Direct JWT requests supply organization context through the configured signed claim or bounded OwlRora header.
+Credential locations are closed:
+
+- OpenAI Chat Completions, OpenAI Responses HTTP/SSE, and Responses WebSocket use `Authorization: Bearer` for either the versioned Gateway key or JWT;
+- Anthropic Messages uses `x-api-key` for a Gateway key and `Authorization: Bearer` for a JWT;
+- Gemini uses `x-goog-api-key` for a Gateway key and `Authorization: Bearer` for a JWT; the `key` query parameter is accepted only when the deployment explicitly enables the Google query-key compatibility option and is removed before request telemetry.
+
+More than one supported credential location, duplicate credential headers, a Gateway key in the JWT location for Anthropic/Gemini, or a JWT in a provider-key location is a conflicting credential error. Gateway-key prefixes and JWT structure make the shared OpenAI Bearer location unambiguous. Direct JWT requests supply organization context through the configured signed claim or bounded OwlRora header.
 
 Client credentials are never upstream credentials. The gateway discards caller-supplied provider authorization, cloud signatures, cookies, account/project headers, host, and hop-by-hop headers. The selected adapter constructs a fresh upstream header map from:
 
@@ -131,7 +139,7 @@ For `previous_response_id` or equivalent provider state:
 - a newly exposed state ID is not sent downstream until the origin binding is durable;
 - a missing, changed, or unavailable origin returns `state_origin_unavailable` rather than guessing.
 
-Responses WebSocket is a separate capability. One downstream connection pins one compatible upstream connection when provider state can be connection-local. Failover is possible only before any upstream event is exposed and only for replay-safe frames without prior state.
+Responses WebSocket is a separate capability on `GET /v1/responses` with WebSocket Upgrade. The initial HTTP request performs authentication, organization qualification, route authorization, and connection admission; every client turn then derives a fresh bounded native intent and revalidates the captured route/principal policy against a current generation before dispatch. One downstream connection pins one compatible upstream connection when provider state can be connection-local. Failover is possible only before any upstream event is exposed and only for replay-safe frames without prior state. The connection uses no OwlRora-required WebSocket subprotocol; unknown requested subprotocols are rejected rather than echoed.
 
 ## 9. OpenAI Codex subscription
 
@@ -153,7 +161,7 @@ Responses base:   https://chatgpt.com/backend-api/codex
 Responses HTTP:   /responses
 ```
 
-Administrators cannot override these URLs through ordinary endpoint configuration. WebSocket, when supported, uses the corresponding Codex Responses endpoint. Community maintainers update this centralized adapter and its fixtures as the upstream contract changes; OwlRora does not promise long-term compatibility with an undocumented consumer backend.
+Administrators cannot override these URLs through ordinary endpoint configuration. Version 1 advertises Codex subscription only for Responses HTTP/SSE; it does not route Codex credentials through the generic Responses WebSocket transport. Any future Codex WebSocket support requires a distinct accepted transport contract and fixtures. Community maintainers update this centralized adapter and its fixtures as the upstream contract changes; OwlRora does not promise long-term compatibility with an undocumented consumer backend.
 
 ### 9.2 Device authorization and credential state
 

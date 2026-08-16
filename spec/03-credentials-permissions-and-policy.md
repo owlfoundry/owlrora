@@ -138,7 +138,7 @@ The version-1 recognized LLM scope set is exactly:
 
 `llm:invoke` is required for every LLM request. Protocol modules derive any additional required credential scopes only from this closed set. Protocol capability support, route eligibility, provider features, or unknown strings do not invent implicit credential scopes. Unknown scopes are rejected rather than treated as granted; adding a future scope requires an explicit versioned schema/registry change.
 
-A membership carries an `llm_scope_ceiling`. Organization and system policy may further narrow it. Role ownership does not bypass these ceilings.
+A membership carries an `llm_scope_ceiling`, a closed `llm_capability_ceiling`, and a typed `llm_route_ceiling`; invitations capture the same three immutable onboarding inputs. Empty scope/capability sets and `route kind=none` mean explicit deny. Organization and system policy may further narrow them. Role ownership does not bypass these ceilings.
 
 ## 6. Gateway API keys
 

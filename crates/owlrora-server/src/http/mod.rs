@@ -1,4 +1,5 @@
 mod auth;
+mod compatibility;
 mod descriptor;
 mod error;
 mod extract;
@@ -24,7 +25,9 @@ use crate::application::Application;
 
 pub use descriptor::{
     CheckedOperationContract, MODULE_I_OPERATIONS, OperationAuthorizationVariant,
-    OperationDescriptor, openapi_document, operation_catalog,
+    OperationDescriptor, OperationIdempotency, OperationMode, OperationQualification,
+    OperationQueryParameter, OperationSecretInput, OperationSecretInputMode, openapi_document,
+    operation_catalog,
 };
 pub use error::ApiError;
 
@@ -34,6 +37,21 @@ pub struct HttpState {
 }
 
 #[must_use]
+pub fn gateway_router(application: Arc<Application>) -> Router {
+    let state = HttpState { application };
+    compatibility::router(state.clone())
+        .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
+        .layer(SetSensitiveHeadersLayer::new([
+            header::AUTHORIZATION,
+            HeaderName::from_static("x-api-key"),
+            HeaderName::from_static("x-goog-api-key"),
+        ]))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
+}
+
 pub fn management_router(application: Arc<Application>) -> Router {
     let origin = application
         .config
@@ -303,8 +321,369 @@ pub fn management_router(application: Arc<Application>) -> Router {
             post(handlers::update_provisioning_policy),
         )
         .route(
+            "/api/v1/system/upstream-credentials",
+            get(handlers::list_system_upstream_credentials),
+        )
+        .route(
+            "/api/v1/system/upstream-credentials/actions/create",
+            post(handlers::create_system_upstream_credential),
+        )
+        .route(
+            "/api/v1/system/upstream-credentials/{credential_id}",
+            get(handlers::get_system_upstream_credential),
+        )
+        .route(
+            "/api/v1/system/upstream-credentials/{credential_id}/actions/update",
+            post(handlers::update_system_upstream_credential),
+        )
+        .route(
+            "/api/v1/system/upstream-credentials/{credential_id}/actions/replace-secret",
+            post(handlers::replace_system_upstream_credential_secret),
+        )
+        .route(
+            "/api/v1/system/upstream-credentials/{credential_id}/actions/reload-source",
+            post(handlers::reload_system_upstream_credential_source),
+        )
+        .route(
+            "/api/v1/system/upstream-credentials/{credential_id}/actions/validate",
+            post(handlers::validate_system_upstream_credential),
+        )
+        .route(
+            "/api/v1/system/upstream-credentials/{credential_id}/codex-login/actions/start",
+            post(handlers::start_codex_login),
+        )
+        .route(
+            "/api/v1/system/upstream-credentials/{credential_id}/codex-login/{session_id}",
+            get(handlers::get_codex_login),
+        )
+        .route(
+            "/api/v1/system/upstream-credentials/{credential_id}/codex-login/{session_id}/actions/complete",
+            post(handlers::complete_codex_login),
+        )
+        .route(
+            "/api/v1/system/upstream-credentials/{credential_id}/codex-login/{session_id}/actions/cancel",
+            post(handlers::cancel_codex_login),
+        )
+        .route(
+            "/api/v1/system/upstream-credentials/{credential_id}/actions/refresh",
+            post(handlers::refresh_codex_credential),
+        )
+        .route(
+            "/api/v1/system/upstream-credentials/{credential_id}/actions/revoke",
+            post(handlers::revoke_codex_credential),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/upstream-credentials",
+            get(handlers::list_organization_upstream_credentials),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/upstream-credentials/actions/create",
+            post(handlers::create_organization_upstream_credential),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/upstream-credentials/{credential_id}",
+            get(handlers::get_organization_upstream_credential),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/upstream-credentials/{credential_id}/actions/update",
+            post(handlers::update_organization_upstream_credential),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/upstream-credentials/{credential_id}/actions/replace-secret",
+            post(handlers::replace_organization_upstream_credential_secret),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/upstream-credentials/{credential_id}/actions/validate",
+            post(handlers::validate_organization_upstream_credential),
+        )
+        .route(
+            "/api/v1/system/egress-network-policies",
+            get(handlers::list_egress_network_policies),
+        )
+        .route(
+            "/api/v1/system/egress-network-policies/actions/create",
+            post(handlers::create_egress_network_policy),
+        )
+        .route(
+            "/api/v1/system/egress-network-policies/{id}",
+            get(handlers::get_egress_network_policy),
+        )
+        .route(
+            "/api/v1/system/egress-network-policies/{id}/actions/update",
+            post(handlers::update_egress_network_policy),
+        )
+        .route(
+            "/api/v1/system/egress-network-policies/{id}/actions/replace-custom-ca",
+            post(handlers::replace_egress_custom_ca),
+        )
+        .route(
+            "/api/v1/system/reliability-policies",
+            get(handlers::list_reliability_policies),
+        )
+        .route(
+            "/api/v1/system/reliability-policies/actions/create",
+            post(handlers::create_reliability_policy),
+        )
+        .route(
+            "/api/v1/system/reliability-policies/{id}",
+            get(handlers::get_reliability_policy),
+        )
+        .route(
+            "/api/v1/system/reliability-policies/{id}/actions/update",
+            post(handlers::update_reliability_policy),
+        )
+        .route(
+            "/api/v1/system/upstream-endpoints",
+            get(handlers::list_upstream_endpoints),
+        )
+        .route(
+            "/api/v1/system/upstream-endpoints/actions/create",
+            post(handlers::create_upstream_endpoint),
+        )
+        .route(
+            "/api/v1/system/upstream-endpoints/{id}",
+            get(handlers::get_upstream_endpoint),
+        )
+        .route(
+            "/api/v1/system/upstream-endpoints/{id}/actions/update",
+            post(handlers::update_upstream_endpoint),
+        )
+        .route(
+            "/api/v1/system/upstream-endpoints/{id}/actions/validate",
+            post(handlers::validate_upstream_endpoint),
+        )
+        .route(
+            "/api/v1/system/gateway-policy-ceilings",
+            get(handlers::get_gateway_policy_ceilings),
+        )
+        .route(
+            "/api/v1/system/gateway-policy-ceilings/actions/update",
+            post(handlers::update_gateway_policy_ceilings),
+        )
+        .route(
+            "/api/v1/system/pricing-policies",
+            get(handlers::list_pricing_policies),
+        )
+        .route(
+            "/api/v1/system/pricing-policies/actions/create",
+            post(handlers::create_pricing_policy),
+        )
+        .route(
+            "/api/v1/system/pricing-policies/{id}",
+            get(handlers::get_pricing_policy),
+        )
+        .route(
+            "/api/v1/system/pricing-policies/{id}/actions/update",
+            post(handlers::update_pricing_policy),
+        )
+        .route(
+            "/api/v1/system/pricing-policies/{id}/actions/publish-version",
+            post(handlers::publish_pricing_policy_version),
+        )
+        .route(
+            "/api/v1/system/model-deployments",
+            get(handlers::list_system_model_deployments),
+        )
+        .route(
+            "/api/v1/system/model-deployments/actions/create",
+            post(handlers::create_system_model_deployment),
+        )
+        .route(
+            "/api/v1/system/model-deployments/{id}",
+            get(handlers::get_system_model_deployment),
+        )
+        .route(
+            "/api/v1/system/model-deployments/{id}/actions/update",
+            post(handlers::update_system_model_deployment),
+        )
+        .route(
+            "/api/v1/system/model-deployments/{id}/actions/validate",
+            post(handlers::validate_system_model_deployment),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/model-deployments",
+            get(handlers::list_organization_model_deployments),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/model-deployments/actions/create",
+            post(handlers::create_organization_model_deployment),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/model-deployments/{id}",
+            get(handlers::get_organization_model_deployment),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/model-deployments/{id}/actions/update",
+            post(handlers::update_organization_model_deployment),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/model-deployments/{id}/actions/validate",
+            post(handlers::validate_organization_model_deployment),
+        )
+        .route(
+            "/api/v1/system/model-routes",
+            get(handlers::list_system_model_routes),
+        )
+        .route(
+            "/api/v1/system/model-routes/actions/create",
+            post(handlers::create_system_model_route),
+        )
+        .route(
+            "/api/v1/system/model-routes/{id}",
+            get(handlers::get_system_model_route),
+        )
+        .route(
+            "/api/v1/system/model-routes/{id}/actions/update",
+            post(handlers::update_system_model_route),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/model-routes",
+            get(handlers::list_organization_model_routes),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/model-routes/actions/create",
+            post(handlers::create_organization_model_route),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/model-routes/{id}",
+            get(handlers::get_organization_model_route),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/model-routes/{id}/actions/update",
+            post(handlers::update_organization_model_route),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/model-routes/{id}/actions/transfer-ownership",
+            post(handlers::transfer_organization_model_route_ownership),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/available-routes",
+            get(handlers::list_available_routes),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/available-endpoints",
+            get(handlers::list_available_endpoints),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/available-deployments",
+            get(handlers::list_available_deployments),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/available-reliability-policies",
+            get(handlers::list_available_reliability_policies),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/system-route-grants",
+            get(handlers::get_system_route_grants),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/system-route-grants/actions/update",
+            post(handlers::update_system_route_grants),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/endpoint-grants",
+            get(handlers::get_endpoint_grants),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/endpoint-grants/actions/update",
+            post(handlers::update_endpoint_grants),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/deployment-grants",
+            get(handlers::get_deployment_grants),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/deployment-grants/actions/update",
+            post(handlers::update_deployment_grants),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/reliability-policy-grants",
+            get(handlers::get_reliability_policy_grants),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/reliability-policy-grants/actions/update",
+            post(handlers::update_reliability_policy_grants),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/gateway-api-keys",
+            get(handlers::list_gateway_api_keys),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/gateway-api-keys/actions/create",
+            post(handlers::create_gateway_api_key),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/gateway-api-keys/{key_id}",
+            get(handlers::get_gateway_api_key),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/gateway-api-keys/{key_id}/actions/update",
+            post(handlers::update_gateway_api_key),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/gateway-api-keys/{key_id}/actions/rotate",
+            post(handlers::rotate_gateway_api_key),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/gateway-api-keys/{key_id}/budget",
+            get(handlers::get_gateway_key_budget),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/gateway-api-keys/{key_id}/budget/actions/update",
+            post(handlers::update_gateway_key_budget),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/gateway-api-keys/{key_id}/budget/actions/begin-epoch",
+            post(handlers::begin_gateway_key_budget_epoch),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/gateway-api-keys/{key_id}/limits",
+            get(handlers::get_gateway_key_limits),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/gateway-api-keys/{key_id}/limits/actions/update",
+            post(handlers::update_gateway_key_limits),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/provider-budgets/system",
+            get(handlers::get_system_provider_budget),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/provider-budgets/system/actions/update",
+            post(handlers::update_system_provider_budget),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/provider-budgets/system/actions/begin-epoch",
+            post(handlers::begin_system_provider_budget_epoch),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/provider-budgets/byok",
+            get(handlers::get_byok_provider_budget),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/provider-budgets/byok/actions/update",
+            post(handlers::update_byok_provider_budget),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/provider-budgets/byok/actions/begin-epoch",
+            post(handlers::begin_byok_provider_budget_epoch),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/usage",
+            get(handlers::organization_usage),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/usage/breakdown",
+            get(handlers::organization_usage_breakdown),
+        )
+        .route(
             "/api/v1/organizations/{organization_id}/audit",
             get(handlers::organization_audit),
+        )
+        .route("/api/v1/system/usage", get(handlers::system_usage))
+        .route(
+            "/api/v1/system/usage/breakdown",
+            get(handlers::system_usage_breakdown),
         )
         .route("/api/v1/system/audit", get(handlers::audit))
         .route(
@@ -332,12 +711,60 @@ pub fn management_router(application: Arc<Application>) -> Router {
             get(handlers::operations_recoveries),
         )
         .route(
+            "/api/v1/system/operations/coordination/recoveries/actions/create",
+            post(handlers::create_coordinator_recoveries),
+        )
+        .route(
+            "/api/v1/system/operations/coordination/activations",
+            get(handlers::operations_activations),
+        )
+        .route(
+            "/api/v1/system/operations/coordination/activations/actions/reconcile",
+            post(handlers::reconcile_policy_activations),
+        )
+        .route(
+            "/api/v1/system/operations/state-origins",
+            get(handlers::operations_state_origins),
+        )
+        .route(
+            "/api/v1/system/operations/state-origins/actions/cleanup",
+            post(handlers::cleanup_state_origins),
+        )
+        .route(
+            "/api/v1/system/operations/upstream-credentials",
+            get(handlers::operations_upstream_credentials),
+        )
+        .route(
+            "/api/v1/system/operations/upstream-credentials/actions/reconcile",
+            post(handlers::reconcile_upstream_credentials),
+        )
+        .route(
+            "/api/v1/system/operations/coordination/codex-refresh-leases/actions/reconcile",
+            post(handlers::reconcile_codex_refresh_leases),
+        )
+        .route(
             "/api/v1/system/operations/identity-state/actions/cleanup",
             post(handlers::cleanup_identity_state),
         )
         .route(
+            "/api/v1/system/operations/target-health",
+            get(handlers::operations_target_health),
+        )
+        .route(
+            "/api/v1/system/operations/target-health/actions/probe",
+            post(handlers::probe_targets),
+        )
+        .route(
             "/api/v1/system/operations/secret-custody",
             get(handlers::operations_secret_custody),
+        )
+        .route(
+            "/api/v1/system/operations/usage-pipeline",
+            get(handlers::operations_usage_pipeline),
+        )
+        .route(
+            "/api/v1/system/operations/usage-pipeline/actions/flush",
+            post(handlers::flush_usage_pipeline),
         )
         .route(
             "/api/v1/system/operations/telemetry",
@@ -364,6 +791,15 @@ pub fn management_router(application: Arc<Application>) -> Router {
             header::REFERRER_POLICY,
             HeaderValue::from_static("no-referrer"),
         ))
+}
+
+pub(crate) fn request_header_bytes(headers: &axum::http::HeaderMap) -> u64 {
+    headers.iter().fold(0_u64, |total, (name, value)| {
+        total
+            .saturating_add(u64::try_from(name.as_str().len()).unwrap_or(u64::MAX))
+            .saturating_add(u64::try_from(value.as_bytes().len()).unwrap_or(u64::MAX))
+            .saturating_add(4)
+    })
 }
 
 async fn attach_command_status(

@@ -34,6 +34,132 @@ function route(
   return { id, path, guard, context, title };
 }
 
+const SYSTEM_CATALOG_FAMILIES = [
+  [
+    "egress-network-policies",
+    "egress-network-policy",
+    "Egress network policy",
+    "system.egress_network_policies",
+  ],
+  ["credentials", "credential", "Upstream credential", "system.upstream_credentials"],
+  ["endpoints", "endpoint", "Upstream endpoint", "system.upstream_endpoints"],
+  ["deployments", "deployment", "Model deployment", "system.model_deployments"],
+  ["model-routes", "model-route", "Model route", "system.model_routes"],
+  ["pricing-policies", "pricing-policy", "Pricing policy", "system.pricing_policies"],
+  [
+    "reliability-policies",
+    "reliability-policy",
+    "Reliability policy",
+    "system.reliability_policies",
+  ],
+] as const;
+
+const ORGANIZATION_CATALOG_FAMILIES = [
+  [
+    "upstream-credentials",
+    "upstream-credential",
+    "BYOK credential",
+    "organization.upstream_credentials",
+    "credential_id",
+  ],
+  [
+    "model-deployments",
+    "model-deployment",
+    "Model deployment",
+    "organization.model_deployments",
+    "deployment_id",
+  ],
+  ["model-routes", "model-route", "Model route", "organization.model_routes", "route_id"],
+] as const;
+
+function systemCatalogRoutes(): ConsoleRoute[] {
+  return SYSTEM_CATALOG_FAMILIES.flatMap(([family, singular, title]) => [
+    route(
+      `admin-catalog-${singular}-new`,
+      `/admin/catalog/${family}/new`,
+      "system_administrator",
+      "admin",
+      `Create ${title.toLowerCase()}`,
+    ),
+    route(
+      `admin-catalog-${singular}-edit`,
+      `/admin/catalog/${family}/{resource_id}/edit`,
+      "system_administrator",
+      "admin",
+      `Edit ${title.toLowerCase()}`,
+    ),
+    route(
+      `admin-catalog-${singular}-detail`,
+      `/admin/catalog/${family}/{resource_id}`,
+      "system_administrator",
+      "admin",
+      title,
+    ),
+    route(
+      `admin-catalog-${family}`,
+      `/admin/catalog/${family}`,
+      "system_administrator",
+      "admin",
+      title
+        .replace(/ policy$/, " policies")
+        .replace(/ credential$/, " credentials")
+        .replace(/ endpoint$/, " endpoints")
+        .replace(/ deployment$/, " deployments")
+        .replace(/ route$/, " routes"),
+    ),
+  ]);
+}
+
+function organizationCatalogRoutes(): ConsoleRoute[] {
+  return ORGANIZATION_CATALOG_FAMILIES.flatMap(([family, singular, title, , idParameter]) => [
+    route(
+      `organization-${singular}-new`,
+      `/organizations/{organization_id}/${family}/new`,
+      "organization_visible",
+      "organization",
+      `Create ${title.toLowerCase()}`,
+    ),
+    route(
+      `organization-${singular}-edit`,
+      `/organizations/{organization_id}/${family}/{${idParameter}}/edit`,
+      "organization_visible",
+      "organization",
+      `Edit ${title.toLowerCase()}`,
+    ),
+    route(
+      `organization-${singular}-detail`,
+      `/organizations/{organization_id}/${family}/{${idParameter}}`,
+      "organization_visible",
+      "organization",
+      title,
+    ),
+    route(
+      `organization-${family}`,
+      `/organizations/{organization_id}/${family}`,
+      "organization_visible",
+      "organization",
+      title,
+    ),
+  ]);
+}
+
+function catalogRouteOperations(): Record<string, string> {
+  const mappings: Record<string, string> = {};
+  for (const [family, singular, , operationFamily] of SYSTEM_CATALOG_FAMILIES) {
+    mappings[`admin-catalog-${singular}-new`] = `${operationFamily}.create`;
+    mappings[`admin-catalog-${singular}-edit`] = `${operationFamily}.update`;
+    mappings[`admin-catalog-${singular}-detail`] = `${operationFamily}.get`;
+    mappings[`admin-catalog-${family}`] = `${operationFamily}.list`;
+  }
+  for (const [family, singular, , operationFamily] of ORGANIZATION_CATALOG_FAMILIES) {
+    mappings[`organization-${singular}-new`] = `${operationFamily}.create`;
+    mappings[`organization-${singular}-edit`] = `${operationFamily}.update`;
+    mappings[`organization-${singular}-detail`] = `${operationFamily}.get`;
+    mappings[`organization-${family}`] = `${operationFamily}.list`;
+  }
+  return mappings;
+}
+
 // Static words are deliberately registered before parameterized detail routes.
 export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   route("root", "/", "any", "public", "OwlRora"),
@@ -51,6 +177,84 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   ),
   route("profile-sessions", "/profile/sessions", "authenticated", "personal", "Sessions"),
   route("organization-selector", "/organizations", "local_user", "personal", "Organizations"),
+  route(
+    "organization-gateway-key-new",
+    "/organizations/{organization_id}/gateway-api-keys/new",
+    "organization_visible",
+    "organization",
+    "Create Gateway API key",
+  ),
+  route(
+    "organization-gateway-key-edit",
+    "/organizations/{organization_id}/gateway-api-keys/{gateway_api_key_id}/edit",
+    "organization_visible",
+    "organization",
+    "Edit Gateway API key",
+  ),
+  route(
+    "organization-gateway-key-budget",
+    "/organizations/{organization_id}/gateway-api-keys/{gateway_api_key_id}/budget",
+    "organization_visible",
+    "organization",
+    "Gateway-key budget",
+  ),
+  route(
+    "organization-gateway-key-limits",
+    "/organizations/{organization_id}/gateway-api-keys/{gateway_api_key_id}/limits",
+    "organization_visible",
+    "organization",
+    "Gateway-key request limits",
+  ),
+  route(
+    "organization-gateway-key-rotate",
+    "/organizations/{organization_id}/gateway-api-keys/{gateway_api_key_id}/rotate",
+    "organization_visible",
+    "organization",
+    "Rotate Gateway API key",
+  ),
+  route(
+    "organization-gateway-key-detail",
+    "/organizations/{organization_id}/gateway-api-keys/{gateway_api_key_id}",
+    "organization_visible",
+    "organization",
+    "Gateway API key",
+  ),
+  route(
+    "organization-gateway-keys",
+    "/organizations/{organization_id}/gateway-api-keys",
+    "organization_visible",
+    "organization",
+    "Gateway API keys",
+  ),
+  route(
+    "organization-upstream-credential-replace-secret",
+    "/organizations/{organization_id}/upstream-credentials/{credential_id}/replace-secret",
+    "organization_visible",
+    "organization",
+    "Replace BYOK secret",
+  ),
+  ...organizationCatalogRoutes(),
+  route(
+    "organization-provider-budget-byok-edit",
+    "/organizations/{organization_id}/provider-budgets/byok/edit",
+    "organization_visible",
+    "organization",
+    "Edit BYOK budget",
+  ),
+  route(
+    "organization-provider-budgets",
+    "/organizations/{organization_id}/provider-budgets",
+    "organization_visible",
+    "organization",
+    "Provider budgets",
+  ),
+  route(
+    "organization-usage",
+    "/organizations/{organization_id}/usage",
+    "organization_visible",
+    "organization",
+    "Usage",
+  ),
   route(
     "organization-management-key-new",
     "/organizations/{organization_id}/management-api-keys/new",
@@ -165,6 +369,20 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
     "system_administrator",
     "admin",
     "Edit organization",
+  ),
+  route(
+    "admin-organization-catalog-grants",
+    "/admin/organizations/{organization_id}/catalog-grants",
+    "system_administrator",
+    "admin",
+    "Catalog grants",
+  ),
+  route(
+    "admin-organization-system-provider-budget",
+    "/admin/organizations/{organization_id}/system-provider-budget",
+    "system_administrator",
+    "admin",
+    "System-provider allocation",
   ),
   route(
     "admin-organization-detail",
@@ -314,6 +532,36 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
     "Provisioning policies",
   ),
   route(
+    "admin-catalog-credential-replace-secret",
+    "/admin/catalog/credentials/{credential_id}/replace-secret",
+    "system_administrator",
+    "admin",
+    "Replace upstream secret",
+  ),
+  route(
+    "admin-catalog-credential-codex-login",
+    "/admin/catalog/credentials/{credential_id}/codex-login/{login_session_id}",
+    "system_administrator",
+    "admin",
+    "Codex login",
+  ),
+  route(
+    "admin-catalog-gateway-policy-ceilings-edit",
+    "/admin/catalog/gateway-policy-ceilings/edit",
+    "system_administrator",
+    "admin",
+    "Edit Gateway policy ceilings",
+  ),
+  route(
+    "admin-catalog-gateway-policy-ceilings",
+    "/admin/catalog/gateway-policy-ceilings",
+    "system_administrator",
+    "admin",
+    "Gateway policy ceilings",
+  ),
+  ...systemCatalogRoutes(),
+  route("admin-usage", "/admin/usage", "system_administrator", "admin", "Usage"),
+  route(
     "admin-operations-readiness",
     "/admin/operations/readiness",
     "system_administrator",
@@ -342,6 +590,41 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
     "Coordination",
   ),
   route(
+    "admin-operations-activations",
+    "/admin/operations/coordination/activations",
+    "system_administrator",
+    "admin",
+    "Policy activations",
+  ),
+  route(
+    "admin-operations-state-origins",
+    "/admin/operations/state-origins",
+    "system_administrator",
+    "admin",
+    "State origins",
+  ),
+  route(
+    "admin-operations-upstream-credentials",
+    "/admin/operations/upstream-credentials",
+    "system_administrator",
+    "admin",
+    "Upstream credential controllers",
+  ),
+  route(
+    "admin-operations-target-health",
+    "/admin/operations/target-health",
+    "system_administrator",
+    "admin",
+    "Target health",
+  ),
+  route(
+    "admin-operations-usage-pipeline",
+    "/admin/operations/usage-pipeline",
+    "system_administrator",
+    "admin",
+    "Usage pipeline",
+  ),
+  route(
     "admin-operations-secret-custody",
     "/admin/operations/secret-custody",
     "system_administrator",
@@ -365,6 +648,18 @@ const ROUTE_OPERATIONS: Readonly<Record<string, string>> = {
   "profile-organizations": "me.organizations.list",
   "profile-sessions": "me.sessions.list",
   "organization-selector": "me.organizations.list",
+  "organization-gateway-key-new": "organization.gateway_api_keys.create",
+  "organization-gateway-key-edit": "organization.gateway_api_keys.update",
+  "organization-gateway-key-budget": "organization.gateway_api_keys.budget.get",
+  "organization-gateway-key-limits": "organization.gateway_api_keys.limits.get",
+  "organization-gateway-key-rotate": "organization.gateway_api_keys.rotate",
+  "organization-gateway-key-detail": "organization.gateway_api_keys.get",
+  "organization-gateway-keys": "organization.gateway_api_keys.list",
+  "organization-upstream-credential-replace-secret":
+    "organization.upstream_credentials.replace_secret",
+  "organization-provider-budget-byok-edit": "organization.provider_budgets.byok.update",
+  "organization-provider-budgets": "organization.provider_budgets.byok.get",
+  "organization-usage": "organization.usage.get",
   "organization-management-key-new": "organization.management_keys.create",
   "organization-management-key-edit": "organization.management_keys.update",
   "organization-management-key-rotate": "organization.management_keys.rotate",
@@ -378,12 +673,15 @@ const ROUTE_OPERATIONS: Readonly<Record<string, string>> = {
   "organization-audit": "organization.audit.list",
   "organization-settings": "organization.get",
   "organization-overview": "organization.get",
+  ...catalogRouteOperations(),
   "admin-user-new": "system.users.create",
   "admin-user-edit": "system.users.update",
   "admin-user-detail": "system.users.get",
   "admin-users": "system.users.list",
   "admin-organization-new": "system.organizations.create",
   "admin-organization-edit": "system.organizations.update",
+  "admin-organization-catalog-grants": "organization.system_route_grants.get",
+  "admin-organization-system-provider-budget": "organization.provider_budgets.system.get",
   "admin-organization-detail": "system.organizations.get",
   "admin-organizations": "system.organizations.list",
   "admin-management-key-new": "system.management_keys.create",
@@ -405,10 +703,20 @@ const ROUTE_OPERATIONS: Readonly<Record<string, string>> = {
   "admin-provisioning-policy-edit": "system.provisioning_policies.update",
   "admin-provisioning-policy-detail": "system.provisioning_policies.get",
   "admin-provisioning-policies": "system.provisioning_policies.list",
+  "admin-catalog-credential-replace-secret": "system.upstream_credentials.replace_secret",
+  "admin-catalog-credential-codex-login": "system.upstream_credentials.codex_login.get",
+  "admin-catalog-gateway-policy-ceilings-edit": "system.gateway_policy_ceilings.update",
+  "admin-catalog-gateway-policy-ceilings": "system.gateway_policy_ceilings.get",
+  "admin-usage": "system.usage.get",
   "admin-operations-readiness": "system.operations.readiness",
   "admin-operations-runtime": "system.operations.runtime",
   "admin-operations-recoveries": "system.operations.recoveries",
   "admin-operations-coordination": "system.operations.coordination",
+  "admin-operations-activations": "system.operations.activations",
+  "admin-operations-state-origins": "system.operations.state_origins",
+  "admin-operations-upstream-credentials": "system.operations.upstream_credentials",
+  "admin-operations-target-health": "system.operations.target_health",
+  "admin-operations-usage-pipeline": "system.operations.usage_pipeline",
   "admin-operations-secret-custody": "system.operations.secret_custody",
   "admin-operations-telemetry": "system.operations.telemetry",
   "admin-operations": "system.operations.overview",

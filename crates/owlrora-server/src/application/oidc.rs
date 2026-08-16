@@ -33,7 +33,23 @@ use super::{
 const STATE_PREFIX: &str = "owlrora_oidc_state_v1";
 const TRANSACTION_PREFIX: &str = "owlrora_oidc_transaction_v1";
 const MAX_TOKEN_RESPONSE_BYTES: usize = 131_072;
-const SOFTWARE_PROVIDER_ID: &str = "software-xchacha20-poly1305";
+
+fn require_protected_browser_client(row: &sqlx::postgres::PgRow) -> Result<(), ApplicationError> {
+    let profile = serde_json::from_value::<crate::domain::BrowserLoginProfile>(
+        row.try_get::<Option<Value>, _>("browser_login")?
+            .ok_or_else(|| {
+                ApplicationError::Conflict("browser login is not configured".to_owned())
+            })?,
+    )
+    .map_err(|_| ApplicationError::Internal)?;
+    if profile.client_authentication == BrowserClientAuthentication::ProtectedClientSecret {
+        Ok(())
+    } else {
+        Err(ApplicationError::Conflict(
+            "issuer browser login uses a public client".to_owned(),
+        ))
+    }
+}
 
 #[derive(Deserialize)]
 struct TokenResponse {
@@ -143,12 +159,17 @@ impl Application {
         let transaction_digest =
             digest_nonrecoverable(b"oidc-transaction", transaction_token.as_bytes());
         let nonce_digest = digest_nonrecoverable(b"oidc-nonce", nonce.as_bytes());
-        let context = state_protection_context(self.store.installation_id(), state_id)?;
+        let context = state_protection_context(
+            self.store.installation_id(),
+            state_id,
+            self.secrets.write_pair(),
+        )?;
         let plaintext = SecretPlaintext::new(pkce_verifier.as_bytes().to_vec())
             .map_err(|_| ApplicationError::Internal)?;
         let envelope = self
             .secrets
             .seal(&context, &plaintext)
+            .await
             .map_err(|_| ApplicationError::Internal)?;
         let envelope_bytes = envelope.expose(<[u8]>::to_vec);
         let mut transaction = self.store.begin().await?;
@@ -175,14 +196,20 @@ impl Application {
         }
         sqlx::query(
             "INSERT INTO oidc_login_states(
-                id, state_digest, issuer_id, pkce_verifier_envelope, nonce_digest,
-                return_to, issuer_policy_version, transaction_digest, expires_at
-             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now()+interval '10 minutes')",
+                id,state_digest,issuer_id,pkce_verifier_envelope,pkce_custody_provider_id,
+                pkce_provider_format_version,pkce_context_version,nonce_digest,return_to,
+                issuer_policy_version,transaction_digest,expires_at
+             ) VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,now()+interval '10 minutes')",
         )
         .bind(state_id)
         .bind(state_digest.to_vec())
         .bind(issuer.id.as_uuid())
         .bind(envelope_bytes)
+        .bind(context.parts().provider_id.as_str())
+        .bind(
+            i32::try_from(context.parts().provider_format_version.get())
+                .map_err(|_| ApplicationError::Internal)?,
+        )
         .bind(nonce_digest.to_vec())
         .bind(&return_to)
         .bind(issuer.policy_version)
@@ -236,7 +263,8 @@ impl Application {
             "UPDATE oidc_login_states SET consumed_at=now()
              WHERE state_digest=$1 AND transaction_digest=$2
                AND consumed_at IS NULL AND expires_at > now()
-             RETURNING id, issuer_id, pkce_verifier_envelope, nonce_digest, return_to,
+             RETURNING id,issuer_id,pkce_verifier_envelope,pkce_custody_provider_id,
+                       pkce_provider_format_version,pkce_context_version,nonce_digest,return_to,
                        issuer_policy_version",
         )
         .bind(state_digest.to_vec())
@@ -249,12 +277,25 @@ impl Application {
         let stored_nonce = digest_array(row.try_get("nonce_digest")?)?;
         let return_to: String = row.try_get("return_to")?;
         let issuer_policy_version: i64 = row.try_get("issuer_policy_version")?;
-        let context = state_protection_context(self.store.installation_id(), state_id)?;
+        if row.try_get::<i32, _>("pkce_context_version")? != 1 {
+            return Err(ApplicationError::Internal);
+        }
+        let pair = crate::secrets::CustodyPair::new(
+            ProviderId::new(row.try_get::<String, _>("pkce_custody_provider_id")?)
+                .map_err(|_| ApplicationError::Internal)?,
+            ProviderFormatVersion::new(
+                u32::try_from(row.try_get::<i32, _>("pkce_provider_format_version")?)
+                    .map_err(|_| ApplicationError::Internal)?,
+            )
+            .map_err(|_| ApplicationError::Internal)?,
+        );
+        let context = state_protection_context(self.store.installation_id(), state_id, &pair)?;
         let envelope = OpaqueEnvelope::new(row.try_get::<Vec<u8>, _>("pkce_verifier_envelope")?)
             .map_err(|_| ApplicationError::Internal)?;
         let verifier_plaintext = self
             .secrets
             .open(&context, &envelope)
+            .await
             .map_err(|_| ApplicationError::Internal)?;
         let pkce_verifier = Zeroizing::new(
             verifier_plaintext
@@ -385,8 +426,42 @@ impl Application {
         }
         let plaintext = SecretPlaintext::new(input.client_secret.into_bytes())
             .map_err(|_| ApplicationError::Validation("client secret is empty".to_owned()))?;
+        let captured = sqlx::query(
+            "SELECT browser_login, policy_version FROM external_identity_issuers WHERE id=$1",
+        )
+        .bind(issuer_id.as_uuid())
+        .fetch_optional(self.store.pool())
+        .await?
+        .ok_or(ApplicationError::NotFound)?;
+        require_protected_browser_client(&captured)?;
+        let captured_policy_version: i64 = captured.try_get("policy_version")?;
+        let secret_version = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(max(secret_version),0)+1 FROM protected_secret_versions
+             WHERE owner_kind='identity_issuer' AND owner_id=$1
+               AND field_purpose='oidc_client_secret'",
+        )
+        .bind(issuer_id.as_uuid())
+        .fetch_one(self.store.pool())
+        .await?;
+        let material_id = Uuid::now_v7();
+        let owner_generation =
+            u64::try_from(captured_policy_version).map_err(|_| ApplicationError::Internal)?;
+        let context = issuer_secret_context(
+            self.store.installation_id(),
+            issuer_id,
+            material_id,
+            owner_generation,
+            u64::try_from(secret_version).map_err(|_| ApplicationError::Internal)?,
+            self.secrets.write_pair(),
+        )?;
+        let envelope = self
+            .secrets
+            .seal(&context, &plaintext)
+            .await
+            .map_err(|_| ApplicationError::DependencyUnavailable)?;
+
         let mut transaction = self.store.begin().await?;
-        let issuer = sqlx::query(
+        let current = sqlx::query(
             "SELECT browser_login, policy_version FROM external_identity_issuers
              WHERE id=$1 FOR UPDATE",
         )
@@ -394,53 +469,28 @@ impl Application {
         .fetch_optional(&mut *transaction)
         .await?
         .ok_or(ApplicationError::NotFound)?;
-        let profile = serde_json::from_value::<crate::domain::BrowserLoginProfile>(
-            issuer
-                .try_get::<Option<Value>, _>("browser_login")?
-                .ok_or_else(|| {
-                    ApplicationError::Conflict("browser login is not configured".to_owned())
-                })?,
-        )
-        .map_err(|_| ApplicationError::Internal)?;
-        if profile.client_authentication != BrowserClientAuthentication::ProtectedClientSecret {
+        require_protected_browser_client(&current)?;
+        if current.try_get::<i64, _>("policy_version")? != captured_policy_version {
             return Err(ApplicationError::Conflict(
-                "issuer browser login uses a public client".to_owned(),
+                "issuer changed while the browser client secret was being protected".to_owned(),
             ));
         }
-        let secret_version = sqlx::query_scalar::<_, i64>(
-            "SELECT COALESCE(max(secret_version),0)+1 FROM protected_secret_versions
-             WHERE owner_kind='identity_issuer' AND owner_id=$1
-               AND field_purpose='oidc_client_secret'",
-        )
-        .bind(issuer_id.as_uuid())
-        .fetch_one(&mut *transaction)
-        .await?;
-        let material_id = Uuid::now_v7();
-        let owner_generation = u64::try_from(issuer.try_get::<i64, _>("policy_version")?)
-            .map_err(|_| ApplicationError::Internal)?;
-        let context = issuer_secret_context(
-            self.store.installation_id(),
-            issuer_id,
-            material_id,
-            owner_generation,
-            u64::try_from(secret_version).map_err(|_| ApplicationError::Internal)?,
-        )?;
-        let envelope = self
-            .secrets
-            .seal(&context, &plaintext)
-            .map_err(|_| ApplicationError::Internal)?;
         sqlx::query(
             "INSERT INTO protected_secret_versions(
                 id, scope_kind, owner_kind, owner_id, owner_generation, secret_version,
                 field_purpose, custody_provider_id, provider_format_version,
                 context_version, opaque_envelope
-             ) VALUES ($1,'system','identity_issuer',$2,$3,$4,'oidc_client_secret',$5,1,1,$6)",
+             ) VALUES ($1,'system','identity_issuer',$2,$3,$4,'oidc_client_secret',$5,$6,1,$7)",
         )
         .bind(material_id)
         .bind(issuer_id.as_uuid())
         .bind(i64::try_from(owner_generation).map_err(|_| ApplicationError::Internal)?)
         .bind(secret_version)
-        .bind(SOFTWARE_PROVIDER_ID)
+        .bind(context.parts().provider_id.as_str())
+        .bind(
+            i32::try_from(context.parts().provider_format_version.get())
+                .map_err(|_| ApplicationError::Internal)?,
+        )
         .bind(envelope.expose(<[u8]>::to_vec))
         .execute(&mut *transaction)
         .await?;
@@ -671,7 +721,8 @@ impl Application {
         issuer_id: IssuerId,
     ) -> Result<Zeroizing<String>, ApplicationError> {
         let row = sqlx::query(
-            "SELECT id, owner_generation, secret_version, opaque_envelope
+            "SELECT id,owner_generation,secret_version,opaque_envelope,custody_provider_id,
+                    provider_format_version,context_version
              FROM protected_secret_versions
              WHERE owner_kind='identity_issuer' AND owner_id=$1
                AND field_purpose='oidc_client_secret'
@@ -684,6 +735,18 @@ impl Application {
             ApplicationError::Conflict("browser client secret is not configured".to_owned())
         })?;
         let material_id: Uuid = row.try_get("id")?;
+        if row.try_get::<i32, _>("context_version")? != 1 {
+            return Err(ApplicationError::Internal);
+        }
+        let pair = crate::secrets::CustodyPair::new(
+            ProviderId::new(row.try_get::<String, _>("custody_provider_id")?)
+                .map_err(|_| ApplicationError::Internal)?,
+            ProviderFormatVersion::new(
+                u32::try_from(row.try_get::<i32, _>("provider_format_version")?)
+                    .map_err(|_| ApplicationError::Internal)?,
+            )
+            .map_err(|_| ApplicationError::Internal)?,
+        );
         let context = issuer_secret_context(
             self.store.installation_id(),
             issuer_id,
@@ -692,12 +755,14 @@ impl Application {
                 .map_err(|_| ApplicationError::Internal)?,
             u64::try_from(row.try_get::<i64, _>("secret_version")?)
                 .map_err(|_| ApplicationError::Internal)?,
+            &pair,
         )?;
         let envelope = OpaqueEnvelope::new(row.try_get::<Vec<u8>, _>("opaque_envelope")?)
             .map_err(|_| ApplicationError::Internal)?;
         let plaintext = self
             .secrets
             .open(&context, &envelope)
+            .await
             .map_err(|_| ApplicationError::DependencyUnavailable)?;
         let secret = plaintext
             .expose(|bytes| String::from_utf8(bytes.to_vec()))
@@ -811,6 +876,7 @@ fn digest_array(value: Vec<u8>) -> Result<[u8; 32], ApplicationError> {
 fn state_protection_context(
     installation_id: Uuid,
     state_id: Uuid,
+    pair: &crate::secrets::CustodyPair,
 ) -> Result<ProtectionContext, ApplicationError> {
     protection_context(
         installation_id,
@@ -820,6 +886,7 @@ fn state_protection_context(
         1,
         1,
         "pkce_verifier",
+        pair,
     )
 }
 
@@ -829,6 +896,7 @@ fn issuer_secret_context(
     material_id: Uuid,
     owner_generation: u64,
     secret_version: u64,
+    pair: &crate::secrets::CustodyPair,
 ) -> Result<ProtectionContext, ApplicationError> {
     protection_context(
         installation_id,
@@ -838,6 +906,7 @@ fn issuer_secret_context(
         owner_generation,
         secret_version,
         "oidc_client_secret",
+        pair,
     )
 }
 
@@ -849,6 +918,7 @@ fn protection_context(
     owner_generation: u64,
     secret_version: u64,
     purpose: &str,
+    pair: &crate::secrets::CustodyPair,
 ) -> Result<ProtectionContext, ApplicationError> {
     ProtectionContext::new(ProtectionContextParts {
         version: ContextVersion::V1,
@@ -862,10 +932,8 @@ fn protection_context(
         owner_generation,
         secret_version,
         field_purpose: FieldPurpose::new(purpose).map_err(|_| ApplicationError::Internal)?,
-        provider_id: ProviderId::new(SOFTWARE_PROVIDER_ID)
-            .map_err(|_| ApplicationError::Internal)?,
-        provider_format_version: ProviderFormatVersion::new(1)
-            .map_err(|_| ApplicationError::Internal)?,
+        provider_id: pair.provider_id().clone(),
+        provider_format_version: pair.format_version(),
     })
     .map_err(|_| ApplicationError::Internal)
 }

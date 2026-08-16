@@ -43,10 +43,13 @@ An `ExternalIdentityIssuer` defines one JWT verification and principal-mapping b
 | `allowed_algorithms` | explicit asymmetric algorithm allowlist |
 | `accepted_audiences` | non-empty exact audience set for OwlRora |
 | `subject_claim` | stable subject claim, normally `sub` |
-| `claim_mapping` | optional typed management-scope, LLM-capability, route/organization narrowing, and presentation metadata mapping |
-| `jwt_capability_ceiling` | maximum coarse OwlRora access classes and LLM capabilities usable through this issuer |
+| `claim_mapping` | optional typed management-scope/capability, LLM-scope/capability, route/organization narrowing, and presentation metadata mapping |
+| `jwt_capability_ceiling` | closed coarse access classes `management:access` and `llm:access`; it never expands either typed ceiling |
 | `management_scope_ceiling` | explicit subset of the five recognized management scopes; non-empty and required when `management:access` is enabled, otherwise empty |
+| `management_capability_ceiling` | explicit closed typed management capability set; non-empty and required with management access |
 | `management_organization_ceiling` | `all_authorized` or non-empty exact organization IDs; required with management access and optionally narrowed by a mapped signed claim |
+| `llm_scope_ceiling` | explicit closed request-scope set containing `llm:invoke` when `llm:access` is enabled; empty means deny |
+| `llm_capability_ceiling` | explicit closed protocol/model feature ceiling, independent of request scopes |
 | `capability_claim_policy` | ignore, optional narrowing, or required narrowing through explicitly mapped typed claims |
 | `jwt_route_ceiling` | `all_organization_granted` or an explicit route-ID set |
 | `organization_selector` | signed claim, bounded OwlRora header, or either |
@@ -57,7 +60,7 @@ An `ExternalIdentityIssuer` defines one JWT verification and principal-mapping b
 
 There is no separate control-plane issuer and workload issuer model. One verified JWT establishes one local principal. The requested operation then passes through the same authorizer used by sessions and API keys.
 
-Audience validation still prevents accepting tokens minted for unrelated services: at least one exact configured audience must be present. A deployment may configure multiple accepted OwlRora audiences, but audience alone does not grant an operation. The issuer capability ceiling contains coarse access classes such as `management:access` and LLM capabilities. Management access separately requires an explicit `management_scope_ceiling` and `management_organization_ceiling`; `management:access` alone never implies all five scopes, any one scope, or deployment-wide resource reach. Optional mapped token capabilities/scopes/organizations can only narrow the corresponding issuer ceiling, never widen it. Claim absence follows the issuer’s explicit capability-claim policy. An active issuer configuration that enables `management:access` without both valid ceilings is rejected rather than defaulted.
+Audience validation still prevents accepting tokens minted for unrelated services: at least one exact configured audience must be present. A deployment may configure multiple accepted OwlRora audiences, but audience alone does not grant an operation. The issuer capability ceiling contains only the coarse access classes `management:access` and `llm:access`. Management access separately requires explicit management scope, typed capability, and organization ceilings; LLM access separately requires a non-empty closed LLM scope ceiling plus explicit feature/route/organization-selector policy. Neither coarse class expands a typed set. Optional mapped token capabilities/scopes/routes/organizations can only narrow the corresponding issuer ceiling, never widen it. Claim absence follows the issuer’s explicit capability-claim policy. An active issuer configuration with an incomplete access-class contract is rejected rather than defaulted.
 
 JWT algorithm selection is checked against the issuer configuration rather than trusted from the token header. Symmetric bearer-token algorithms are not supported.
 

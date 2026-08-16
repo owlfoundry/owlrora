@@ -794,7 +794,8 @@ async fn oidc_subject_generation(
     .fetch_one(&mut **transaction)
     .await?;
     let membership_rows = sqlx::query(
-        "SELECT m.organization_id, m.role, o.status
+        "SELECT m.id, m.organization_id, m.role, m.llm_scope_ceiling,
+                m.llm_capability_ceiling, m.llm_route_ceiling, o.status
          FROM memberships m
          JOIN organizations o ON o.id=m.organization_id
          WHERE m.user_id=$1 AND m.status='active'",
@@ -806,8 +807,15 @@ async fn oidc_subject_generation(
         .into_iter()
         .map(|row| {
             Ok((
+                row.try_get::<Uuid, _>("id")?,
                 OrganizationId::from_uuid(row.try_get("organization_id")?),
                 parse_organization_role(&row.try_get::<String, _>("role")?)?,
+                serde_json::from_value(row.try_get("llm_scope_ceiling")?)
+                    .map_err(|_| ApplicationError::Internal)?,
+                serde_json::from_value(row.try_get("llm_capability_ceiling")?)
+                    .map_err(|_| ApplicationError::Internal)?,
+                serde_json::from_value(row.try_get("llm_route_ceiling")?)
+                    .map_err(|_| ApplicationError::Internal)?,
                 row.try_get::<String, _>("status")? == "active",
             ))
         })
@@ -830,7 +838,15 @@ fn patch_oidc_subject_generation(
     user_id: UserId,
     user_active: bool,
     system_administrator: bool,
-    memberships: &[(OrganizationId, OrganizationRole, bool)],
+    memberships: &[(
+        Uuid,
+        OrganizationId,
+        OrganizationRole,
+        crate::domain::LlmScopeCeiling,
+        std::collections::BTreeSet<crate::domain::LlmFeatureCapability>,
+        crate::domain::JwtRouteCeiling,
+        bool,
+    )],
 ) -> Arc<RuntimeGeneration> {
     let mut snapshot = (*base_generation.snapshot).clone();
     let identity = &mut snapshot.identity;
@@ -846,16 +862,33 @@ fn patch_oidc_subject_generation(
     identity
         .memberships
         .retain(|(_, member_user_id), _| *member_user_id != user_id);
-    for &(organization_id, role, organization_active) in memberships {
+    for (
+        membership_id,
+        organization_id,
+        role,
+        llm_scopes,
+        llm_capabilities,
+        llm_routes,
+        organization_active,
+    ) in memberships
+    {
         identity
             .active_organizations
-            .insert(organization_id, organization_active);
-        identity
-            .memberships
-            .insert((organization_id, user_id), MembershipSnapshot { role });
+            .insert(*organization_id, *organization_active);
+        identity.memberships.insert(
+            (*organization_id, user_id),
+            MembershipSnapshot {
+                membership_id: *membership_id,
+                role: *role,
+                llm_scopes: llm_scopes.clone(),
+                llm_capabilities: llm_capabilities.clone(),
+                llm_routes: llm_routes.clone(),
+            },
+        );
     }
     Arc::new(RuntimeGeneration {
         snapshot: Arc::new(snapshot),
+        credential_clients: Arc::clone(&base_generation.credential_clients),
     })
 }
 
@@ -1377,9 +1410,17 @@ mod tests {
         let base = Arc::new(RuntimeGeneration {
             snapshot: Arc::new(crate::runtime::RuntimeSnapshot {
                 revision: 7,
+                security_revision: 7,
                 built_at: Utc::now(),
+                compatibility_registry_version: 1,
+                gateway_policy_ceilings: crate::runtime::GatewayPolicyCeilingsSnapshot::default(),
                 identity: crate::runtime::IdentitySnapshot::default(),
+                gateway_keys: std::collections::HashMap::new(),
+                organizations: std::collections::HashMap::new(),
+                policy_activations: std::collections::HashMap::new(),
+                catalog: crate::runtime::CatalogSnapshot::default(),
             }),
+            credential_clients: Arc::new(crate::runtime::CredentialClientRegistry::default()),
         });
 
         let callback = patch_oidc_subject_generation(
@@ -1389,7 +1430,15 @@ mod tests {
             user_id,
             true,
             false,
-            &[(organization_id, OrganizationRole::Member, true)],
+            &[(
+                Uuid::now_v7(),
+                organization_id,
+                OrganizationRole::Member,
+                crate::domain::LlmScopeCeiling::denied(),
+                std::collections::BTreeSet::new(),
+                crate::domain::JwtRouteCeiling::None,
+                true,
+            )],
         );
 
         assert!(base.snapshot.identity.external_bindings.is_empty());

@@ -81,7 +81,7 @@ Protocol compatibility versioning follows the relevant vendor path/header contra
 
 Management API keys use `Authorization: Bearer <management-api-key>` and a distinct versioned management prefix. They resolve the configured `seed_admin` user or a durable deployment/organization key resource principal, preserve the key's scopes/capabilities and immutable resource scope, enter the same typed authorizer, and are rejected on every LLM compatibility path. A key-derived browser session preserves the exact key principal, key identity/version, ceilings, resource scope, and authentication origin; it never substitutes the creator user.
 
-Gateway API keys use their own versioned LLM prefix and protocol-compatible header locations. A syntactically valid key of the wrong class is rejected without trying to reinterpret it. JWT verification and local authorization are shared across management and LLM surfaces. Audience proves the token was intended for OwlRora. A management JWT/session requires issuer/token `management:access`, the operation's concrete scopes from the explicit issuer management-scope ceiling, the effective issuer management-organization ceiling, and current local capabilities; `management:access` alone grants nothing. LLM requests require the applicable LLM scopes and current local authority.
+Gateway API keys use their own versioned LLM prefix and the closed protocol locations in specification 05: OpenAI uses Bearer, Anthropic uses `x-api-key`, and Gemini uses `x-goog-api-key` with query `key` allowed only by explicit compatibility configuration. Conflicting or duplicate locations fail authentication. A syntactically valid key of the wrong class is rejected without trying to reinterpret it. JWT verification and local authorization are shared across management and LLM surfaces. Audience proves the token was intended for OwlRora. A management JWT/session requires issuer/token `management:access`, the operation's concrete scopes from the explicit issuer management-scope ceiling, the effective issuer management-organization ceiling, and current local capabilities; `management:access` alone grants nothing. LLM requests require the applicable LLM scopes and current local authority.
 
 Provider credentials, Codex access tokens, external identity tokens, management API keys, and the seed-administrator deployment key are never accepted as gateway API keys.
 
@@ -232,10 +232,20 @@ GET /api/v1/system/operations/readiness
 GET /api/v1/system/operations/runtime
 GET /api/v1/system/operations/coordination
 GET /api/v1/system/operations/coordination/recoveries
+GET /api/v1/system/operations/coordination/activations
+GET /api/v1/system/operations/state-origins
+GET /api/v1/system/operations/upstream-credentials
+GET /api/v1/system/operations/target-health
 GET /api/v1/system/operations/secret-custody
 GET /api/v1/system/operations/usage-pipeline
 GET /api/v1/system/operations/telemetry
-POST /api/v1/system/operations/.../actions/<typed-recovery-command>
+POST /api/v1/system/operations/runtime/actions/reconcile
+POST /api/v1/system/operations/coordination/recoveries/actions/create
+POST /api/v1/system/operations/coordination/activations/actions/reconcile
+POST /api/v1/system/operations/state-origins/actions/cleanup
+POST /api/v1/system/operations/upstream-credentials/actions/reconcile
+POST /api/v1/system/operations/target-health/actions/probe
+POST /api/v1/system/operations/usage-pipeline/actions/flush
 ```
 
 Every route is represented in the same checked operation descriptor, OpenAPI document, management error envelope, CLI inventory, and MCP inventory as other management APIs. It requires `management:operations` plus `management:read` for diagnostics or `management:write` for a recovery/mutation command, current system-administrator capability, and the configured operator-network policy. Diagnostic `GET`s are side-effect-free and create no durable per-request audit row; bounded request metadata and telemetry are sufficient. Every accepted recovery/mutation command commits its durable audit evidence under the normal command contract. Public `/health` and `/ready` never proxy or summarize these protected details.
@@ -245,6 +255,7 @@ Every route is represented in the same checked operation descriptor, OpenAPI doc
 System resource families:
 
 ```text
+/api/v1/system/egress-network-policies
 /api/v1/system/upstream-credentials
 /api/v1/system/upstream-endpoints
 /api/v1/system/model-deployments
@@ -265,7 +276,9 @@ POST /api/v1/system/model-deployments/{id}/actions/validate
 POST /api/v1/system/pricing-policies/{id}/actions/publish-version
 ```
 
-Create/replace secret accepts write-only material or a typed external source reference. Queries expose source kind, custody-provider/format metadata, credential state, expiry, version, and validation status without ciphertext, opaque envelopes, fingerprints usable as secrets, or plaintext.
+Create/replace secret accepts write-only material or a typed external source reference. Queries expose source kind, custody-provider/format metadata, credential state, expiry, version, and validation status without ciphertext, opaque envelopes, fingerprints usable as secrets, or plaintext. Secret replacement accepts `Idempotency-Key`: the server computes the request fingerprint with a domain-separated keyed MAC over the canonical command and secret input, using a key derived from the configured secret root and immutable installation ID. PostgreSQL therefore stores neither the secret nor an offline-verifiable unkeyed secret digest. The comparison is constant-time, the record follows the ordinary bounded idempotency-retention window, and only the safe metadata response is replayed. Reuse with another input conflicts. Reload-source, validation, and pricing-version publication are descriptor-classified idempotent commands; a repeated request returns or converges on the same fenced operation result rather than issuing unbounded provider work.
+
+Each ordinary egress-network-policy family operation uses the standard IDs `system.egress_network_policies.list|create|get|update`; it is projected into the generated CLI and MCP like every other system family. Egress policy queries and commands expose only typed DNS/address/TLS/redirect/connection/body bounds, the reserved nullable `proxy_url`, and safe protected-CA metadata, never protected CA contents. Commands reject non-null `proxy_url` values until a proxy trust contract can enforce the destination address behind HTTP CONNECT.
 
 A route update may replace its full target set atomically rather than requiring add/update/remove target endpoints. Like every ordinary update, it requires `If-Match` and stable existing target IDs. Deployment, route, and reliability grants use the organization-qualified complete-set paths defined below, or explicit grant/revoke commands when external platforms need idempotent deltas.
 
@@ -317,6 +330,8 @@ GET /api/v1/organizations/{organization_id}/available-deployments
 GET /api/v1/organizations/{organization_id}/available-reliability-policies
 GET /api/v1/organizations/{organization_id}/usage
 GET /api/v1/organizations/{organization_id}/usage/breakdown
+GET /api/v1/system/usage
+GET /api/v1/system/usage/breakdown
 GET /api/v1/organizations/{organization_id}/audit
 ```
 
@@ -379,11 +394,12 @@ POST /api/v1/organizations/{organization_id}/provider-budgets/byok/actions/begin
 POST /v1/messages
 POST /v1/chat/completions
 POST /v1/responses
+GET  /v1/responses  # WebSocket Upgrade only
 POST /v1beta/models/{model}:generateContent
-POST /v1beta/models/{model}:streamGenerateContent
+POST /v1beta/models/{model}:streamGenerateContent?alt=sse
 ```
 
-Responses WebSocket uses only its documented protocol-compatible route. These endpoints use protocol-native auth locations, limits, streams, and error envelopes rather than the management envelope.
+Gemini streaming requires exactly one `alt=sse` query value. Responses WebSocket uses only the upgraded `GET /v1/responses` route, no OwlRora-required subprotocol, and only deployments advertising `openai_responses_websocket`. Codex subscription is HTTP/SSE only in version 1. These endpoints use protocol-native auth locations, limits, streams, and error envelopes rather than the management envelope.
 
 Direct JWT LLM requests select organization through configured claim/header policy and pass the same local membership/route authorizer as Gateway-key requests. They record usage but do not receive a fabricated Gateway key, route allowlist, key budget, provider-origin budget, rate policy, or concurrency policy.
 
