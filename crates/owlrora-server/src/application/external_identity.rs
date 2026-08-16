@@ -1016,7 +1016,7 @@ impl Application {
              RETURNING fencing_token",
         )
         .bind(issuer_id.to_string())
-        .bind(format!("node-{}", std::process::id()))
+        .bind(format!("jwks-refresh-lease:{}", Uuid::now_v7()))
         .fetch_optional(self.store.pool())
         .await?;
         Ok(fencing_token)

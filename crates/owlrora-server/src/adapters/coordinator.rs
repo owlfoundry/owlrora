@@ -626,7 +626,6 @@ pub struct BudgetGrantSide {
 pub struct PairedBudgetGrantRequest {
     pub organization_id: OrganizationId,
     pub grant_id: Uuid,
-    pub node_instance_id: String,
     pub key: Option<BudgetGrantSide>,
     pub origin: Option<BudgetGrantSide>,
     pub requested_ttl: Duration,
@@ -704,7 +703,6 @@ pub struct TargetHealthSummary {
     #[serde(default)]
     pub recovery_started_at_unix_ms: Option<u64>,
     pub observed_at_unix_ms: u64,
-    pub source_node_id: String,
 }
 
 impl RedisCoordinator {
@@ -1302,10 +1300,7 @@ impl RedisCoordinator {
         lease_token: &str,
         ttl: Duration,
     ) -> Result<(), CoordinatorError> {
-        if summary.source_node_id.is_empty()
-            || summary.source_node_id.len() > 128
-            || summary.source_node_id.chars().any(char::is_control)
-            || lease_token.is_empty()
+        if lease_token.is_empty()
             || lease_token.len() > 128
             || lease_token.chars().any(char::is_control)
         {
@@ -1549,14 +1544,14 @@ fn concurrency_key(policy: &PolicyReference) -> String {
 
 fn target_probe_lease_key(target_id: Uuid, binding_fingerprint: &[u8; 32]) -> String {
     format!(
-        "owlrora:{{{target_id}}}:target-probe-lease:v1:{}",
+        "owlrora:{{{target_id}}}:target-probe-lease:v2:{}",
         hex_digest(binding_fingerprint)
     )
 }
 
 fn target_health_key(target_id: Uuid, binding_fingerprint: &[u8; 32]) -> String {
     format!(
-        "owlrora:{{{target_id}}}:target-health:v1:{}",
+        "owlrora:{{{target_id}}}:target-health:v2:{}",
         hex_digest(binding_fingerprint)
     )
 }
@@ -1597,7 +1592,10 @@ fn digest_component(value: &str) -> String {
 fn grant_fingerprint(request: &PairedBudgetGrantRequest) -> String {
     let mut value = format!(
         "{}\0{}\0{}\0{}\0",
-        request.organization_id, request.grant_id, request.node_instance_id, request.one_shot
+        request.organization_id,
+        request.grant_id,
+        request.one_shot,
+        request.requested_ttl.as_secs()
     );
     for side in [request.key.as_ref(), request.origin.as_ref()] {
         if let Some(side) = side {
@@ -1777,17 +1775,52 @@ mod tests {
         assert_eq!(
             target_probe_lease_key(target_id, &[7; 32]),
             format!(
-                "owlrora:{{{target_id}}}:target-probe-lease:v1:{}",
+                "owlrora:{{{target_id}}}:target-probe-lease:v2:{}",
                 "07".repeat(32)
             )
         );
         assert_eq!(
             target_health_key(target_id, &[7; 32]),
             format!(
-                "owlrora:{{{target_id}}}:target-health:v1:{}",
+                "owlrora:{{{target_id}}}:target-health:v2:{}",
                 "07".repeat(32)
             )
         );
+    }
+
+    #[test]
+    fn allowance_grant_fingerprint_binds_identity_policy_amount_and_ttl() {
+        let candidate = budget_candidate();
+        let policy = PolicyReference {
+            organization_id: candidate.organization_id,
+            kind: candidate.kind,
+            policy_id: candidate.policy_id,
+            version_id: candidate.desired_version_id,
+            epoch: candidate.desired_epoch,
+            generation: candidate.desired_generation,
+            recovery_generation: 0,
+        };
+        let request = PairedBudgetGrantRequest {
+            organization_id: candidate.organization_id,
+            grant_id: Uuid::now_v7(),
+            key: Some(BudgetGrantSide {
+                policy,
+                amount_nanos: 100,
+            }),
+            origin: None,
+            requested_ttl: Duration::from_secs(30),
+            one_shot: false,
+        };
+        let fingerprint = grant_fingerprint(&request);
+        let mut changed = request.clone();
+        changed.requested_ttl = Duration::from_secs(31);
+        assert_ne!(fingerprint, grant_fingerprint(&changed));
+        changed = request.clone();
+        changed.grant_id = Uuid::now_v7();
+        assert_ne!(fingerprint, grant_fingerprint(&changed));
+        changed = request.clone();
+        changed.key.as_mut().unwrap().amount_nanos = 101;
+        assert_ne!(fingerprint, grant_fingerprint(&changed));
     }
 
     #[test]

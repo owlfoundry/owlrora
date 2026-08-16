@@ -1294,6 +1294,250 @@ pub mod test_support {
     }
 
     #[tokio::test]
+    async fn replica_identity_removal_migration_aggregates_existing_checkpoints() {
+        let Some(store) = connect_from_environment().await else {
+            return;
+        };
+        let mut transaction = store.begin().await.unwrap();
+        let schema = format!("replica_identity_upgrade_{}", Uuid::now_v7().simple());
+        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        sqlx::query(&format!("SET LOCAL search_path TO {schema}, pg_catalog"))
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        for migration in [
+            include_str!("migrations/0001_module_i.sql"),
+            include_str!("migrations/0002_external_session_subject.sql"),
+            include_str!("migrations/0003_identity_authority_hardening.sql"),
+            include_str!("migrations/0004_owner_invariant_trigger_fix.sql"),
+            include_str!("migrations/0005_verifier_material_delete_guard.sql"),
+            include_str!("migrations/0006_session_and_rotation_hardening.sql"),
+            include_str!("migrations/0007_identity_cleanup_indexes.sql"),
+            include_str!("migrations/0008_module_ii_gateway_plane.sql"),
+            include_str!("migrations/0009_usage_query_indexes.sql"),
+            include_str!("migrations/0010_historical_route_grant_attribution.sql"),
+            include_str!("migrations/0011_coordinator_recovery_installations.sql"),
+        ] {
+            sqlx::raw_sql(migration)
+                .execute(&mut *transaction)
+                .await
+                .unwrap();
+        }
+
+        let organization_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO organizations(
+                id, kind, status, name, created_by_principal, etag_token
+             ) VALUES ($1, 'ordinary', 'suspended', $2, '{}'::jsonb, $3)",
+        )
+        .bind(organization_id)
+        .bind(format!("replica-identity-upgrade-{organization_id}"))
+        .bind(Uuid::now_v7())
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+        let system_policy_id = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM organization_origin_budget_policies
+             WHERE organization_id=$1 AND origin='system_provided'",
+        )
+        .bind(organization_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .unwrap();
+        let byok_policy_id = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM organization_origin_budget_policies
+             WHERE organization_id=$1 AND origin='organization_byok'",
+        )
+        .bind(organization_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .unwrap();
+        let system_version_one = Uuid::now_v7();
+        let system_version_two = Uuid::now_v7();
+        let byok_version = Uuid::now_v7();
+        for (version_id, policy_id, generation, epoch) in [
+            (system_version_one, system_policy_id, 1_i64, "epoch-one"),
+            (system_version_two, system_policy_id, 2_i64, "epoch-two"),
+            (byok_version, byok_policy_id, 1_i64, "epoch-one"),
+        ] {
+            sqlx::query(
+                "INSERT INTO budget_policy_versions(
+                    id, policy_kind, organization_origin_budget_policy_id,
+                    generation, limit_cost_nanos, recovery_incident_cap_nanos,
+                    recovery_epoch_cap_nanos, epoch, mode, estimate_policy,
+                    allowance_policy, failure_policy, recovery_policy,
+                    created_by_principal
+                 ) VALUES (
+                    $1, 'organization_origin_budget', $2,
+                    $3, 1000, 100, 200, $4, 'enforce',
+                    '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb
+                 )",
+            )
+            .bind(version_id)
+            .bind(policy_id)
+            .bind(generation)
+            .bind(epoch)
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO allowance_checkpoints(
+                organization_id, policy_kind, policy_id, policy_version_id,
+                epoch, generation, node_id, granted_nanos, settled_nanos,
+                returned_nanos, observed_at
+             ) VALUES
+                ($1, 'organization_origin_budget', $2, $3, 'epoch-one', 1,
+                 'replica-a', 100, 70, 10, '2026-08-15T10:00:00Z'),
+                ($1, 'organization_origin_budget', $2, $3, 'epoch-one', 1,
+                 'replica-b', 200, 160, 20, '2026-08-15T11:00:00Z'),
+                ($1, 'organization_origin_budget', $2, $4, 'epoch-two', 2,
+                 'replica-a', 400, 300, 40, '2026-08-15T12:00:00Z'),
+                ($1, 'organization_origin_budget', $5, $6, 'epoch-one', 1,
+                 'replica-c', 500, 350, 50, '2026-08-15T13:00:00Z')",
+        )
+        .bind(organization_id)
+        .bind(system_policy_id)
+        .bind(system_version_one)
+        .bind(system_version_two)
+        .bind(byok_policy_id)
+        .bind(byok_version)
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO node_watermarks(
+                node_id, applied_revision, applied_security_revision, heartbeat_at
+             ) VALUES ('replica-a', 7, 5, now())",
+        )
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+        sqlx::query("SET CONSTRAINTS ALL IMMEDIATE")
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+
+        sqlx::raw_sql(include_str!(
+            "migrations/0012_remove_node_instance_identity.sql"
+        ))
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+
+        let aggregate = sqlx::query(
+            "SELECT granted_nanos::text AS granted_nanos,
+                    settled_nanos::text AS settled_nanos,
+                    returned_nanos::text AS returned_nanos,
+                    observed_at
+             FROM allowance_checkpoints
+             WHERE policy_kind='organization_origin_budget'
+               AND policy_id=$1 AND epoch='epoch-one' AND generation=1",
+        )
+        .bind(system_policy_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .unwrap();
+        assert_eq!(
+            aggregate.try_get::<String, _>("granted_nanos").unwrap(),
+            "300"
+        );
+        assert_eq!(
+            aggregate.try_get::<String, _>("settled_nanos").unwrap(),
+            "230"
+        );
+        assert_eq!(
+            aggregate.try_get::<String, _>("returned_nanos").unwrap(),
+            "30"
+        );
+        assert_eq!(
+            aggregate
+                .try_get::<DateTime<Utc>, _>("observed_at")
+                .unwrap(),
+            "2026-08-15T11:00:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM allowance_checkpoints")
+                .fetch_one(&mut *transaction)
+                .await
+                .unwrap(),
+            3
+        );
+        let primary_key = sqlx::query_scalar::<_, String>(
+            "SELECT pg_get_constraintdef(oid)
+             FROM pg_constraint
+             WHERE conrelid='allowance_checkpoints'::regclass AND contype='p'",
+        )
+        .fetch_one(&mut *transaction)
+        .await
+        .unwrap();
+        assert_eq!(
+            primary_key,
+            "PRIMARY KEY (policy_kind, policy_id, epoch, generation)"
+        );
+        assert!(
+            !sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema=current_schema()
+                      AND table_name='allowance_checkpoints'
+                      AND column_name='node_id'
+                 )",
+            )
+            .fetch_one(&mut *transaction)
+            .await
+            .unwrap()
+        );
+        assert!(
+            sqlx::query_scalar::<_, bool>(
+                "SELECT to_regclass('allowance_checkpoints_with_node_identity') IS NULL
+                    AND to_regclass('node_watermarks') IS NULL",
+            )
+            .fetch_one(&mut *transaction)
+            .await
+            .unwrap()
+        );
+
+        sqlx::query("SAVEPOINT invalid_checkpoint")
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        sqlx::query("SET CONSTRAINTS allowance_checkpoints_typed_identity DEFERRED")
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO allowance_checkpoints(
+                organization_id, policy_kind, policy_id, policy_version_id,
+                epoch, generation, granted_nanos, settled_nanos, returned_nanos,
+                observed_at
+             ) VALUES (
+                $1, 'organization_origin_budget', $2, $3,
+                'invalid-epoch', 999, 1, 0, 0, now()
+             )",
+        )
+        .bind(organization_id)
+        .bind(system_policy_id)
+        .bind(Uuid::now_v7())
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+        let error = sqlx::query("SET CONSTRAINTS allowance_checkpoints_typed_identity IMMEDIATE")
+            .execute(&mut *transaction)
+            .await
+            .unwrap_err();
+        assert!(error.as_database_error().is_some());
+        sqlx::query("ROLLBACK TO SAVEPOINT invalid_checkpoint")
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        transaction.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn module_ii_migration_preserves_legacy_issuer_authority() {
         let Some(store) = connect_from_environment().await else {
             return;

@@ -325,10 +325,6 @@ mod tests {
                     "http://127.0.0.1:8080".to_owned(),
                 ),
                 ("OWLRORA_REDIS_URL".to_owned(), redis_url),
-                (
-                    "OWLRORA_NODE_INSTANCE_ID".to_owned(),
-                    format!("management-e2e-{}", uuid::Uuid::now_v7()),
-                ),
                 ("OWLRORA_SEED_ADMIN_API_KEY".to_owned(), seed_key.clone()),
                 (
                     "OWLRORA_SECRET_ROOT".to_owned(),
@@ -633,7 +629,7 @@ mod tests {
         let status = response.status();
         assert_eq!(response.headers()["x-owlrora-command-status"], "committed");
         assert!(matches!(
-            response.headers()["x-owlrora-node-publication"]
+            response.headers()["x-owlrora-process-publication"]
                 .to_str()
                 .unwrap(),
             "applied" | "pending"

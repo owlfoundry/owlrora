@@ -4,16 +4,57 @@ export default defineConfig({
   title: "OwlRora",
   description: "OwlRora — Routing and Observability for Reliable AI",
   cleanUrls: true,
+  lastUpdated: true,
   sitemap: {
     hostname: "https://owlrora-docs.owlfoundry.org",
   },
-  head: [["meta", { name: "theme-color", content: "#111827" }]],
   themeConfig: {
     nav: [
-      { text: "Home", link: "/" },
-      { text: "Overview", link: "/overview" },
-      { text: "GitHub", link: "https://github.com/owlfoundry/owlrora" },
+      { text: "Guide", link: "/guide/getting-started" },
+      { text: "Deployment", link: "/deployment/" },
+      { text: "Status", link: "/reference/implementation-status" },
     ],
+    sidebar: [
+      {
+        text: "Introduction",
+        items: [
+          { text: "Overview", link: "/overview" },
+          { text: "Getting started", link: "/guide/getting-started" },
+        ],
+      },
+      {
+        text: "Use OwlRora",
+        items: [
+          { text: "Management plane", link: "/guide/management" },
+          { text: "Gateway plane", link: "/guide/gateway" },
+          { text: "CLI and MCP", link: "/guide/cli-and-mcp" },
+        ],
+      },
+      {
+        text: "Deploy and operate",
+        items: [
+          { text: "Deployment", link: "/deployment/" },
+          { text: "Configuration", link: "/deployment/configuration" },
+          { text: "Production operations", link: "/deployment/operations" },
+        ],
+      },
+      {
+        text: "Reference",
+        items: [
+          {
+            text: "Implementation status",
+            link: "/reference/implementation-status",
+          },
+          { text: "Security model", link: "/reference/security" },
+        ],
+      },
+    ],
+    search: {
+      provider: "local",
+    },
+    outline: {
+      level: [2, 3],
+    },
     socialLinks: [
       { icon: "github", link: "https://github.com/owlfoundry/owlrora" },
     ],

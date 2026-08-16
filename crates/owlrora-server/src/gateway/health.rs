@@ -58,7 +58,6 @@ pub(crate) struct TargetProbeWorker {
     runtime: Arc<RuntimePublisher>,
     coordinator: Arc<RedisCoordinator>,
     protection: Arc<TargetProtectionState>,
-    node_instance_id: String,
     plan: Mutex<ProbePlan>,
     observations: Mutex<HashMap<TargetId, TargetProbeObservation>>,
     shutdown: watch::Sender<bool>,
@@ -103,14 +102,12 @@ impl TargetProbeWorker {
         runtime: Arc<RuntimePublisher>,
         coordinator: Arc<RedisCoordinator>,
         protection: Arc<TargetProtectionState>,
-        node_instance_id: String,
     ) -> Arc<Self> {
         let (shutdown, _) = watch::channel(false);
         Arc::new(Self {
             runtime,
             coordinator,
             protection,
-            node_instance_id,
             plan: Mutex::new(ProbePlan {
                 runtime_revision: i64::MIN,
                 specs: HashMap::new(),
@@ -510,7 +507,6 @@ impl TargetProbeWorker {
             cooldown_until_unix_ms,
             recovery_started_at_unix_ms,
             observed_at_unix_ms: now,
-            source_node_id: self.node_instance_id.clone(),
         };
         let observation = TargetProbeObservation {
             summary: summary.clone(),
@@ -1008,7 +1004,6 @@ mod tests {
                 cooldown_until_unix_ms: None,
                 recovery_started_at_unix_ms: None,
                 observed_at_unix_ms: 10_000,
-                source_node_id: "node-a".to_owned(),
             },
             route_id: Uuid::now_v7(),
             latency_millis: 0,
@@ -1088,7 +1083,6 @@ mod tests {
                 cooldown_until_unix_ms: None,
                 recovery_started_at_unix_ms: Some(10_000),
                 observed_at_unix_ms: 10_000,
-                source_node_id: "node-a".to_owned(),
             },
             route_id: Uuid::now_v7(),
             latency_millis: 0,

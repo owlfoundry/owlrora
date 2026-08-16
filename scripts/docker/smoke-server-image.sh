@@ -70,7 +70,6 @@ docker run --detach \
   --publish 127.0.0.1::8080 \
   --env OWLRORA_DATABASE_URL=postgresql://owlrora:owlrora_smoke@postgres:5432/owlrora \
   --env OWLRORA_REDIS_URL=redis://redis:6379/0 \
-  --env OWLRORA_NODE_INSTANCE_ID="$server" \
   --env OWLRORA_PUBLIC_ORIGIN=http://127.0.0.1:8080 \
   --env OWLRORA_SEED_ADMIN_API_KEY=owlrora_mgmt_v1.CQkJCQkJCQkJCQkJCQkJCQ.CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo \
   --env OWLRORA_SECRET_ROOT=CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws \

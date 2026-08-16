@@ -30,7 +30,6 @@ const BUDGET_RETURN_AHEAD_MILLIS: u64 = 30_000;
 
 #[derive(Debug)]
 pub(crate) struct GatewayAdmissionState {
-    node_instance_id: String,
     local: Mutex<LocalAdmissionState>,
     budget_refills: AsyncMutex<HashMap<BudgetPairKey, Arc<AsyncMutex<()>>>>,
     shutdown: watch::Sender<bool>,
@@ -39,7 +38,7 @@ pub(crate) struct GatewayAdmissionState {
 
 impl Default for GatewayAdmissionState {
     fn default() -> Self {
-        Self::new("unconfigured".to_owned())
+        Self::new()
     }
 }
 
@@ -259,10 +258,9 @@ impl Drop for LogicalRequestPermit {
 }
 
 impl GatewayAdmissionState {
-    pub(crate) fn new(node_instance_id: String) -> Self {
+    pub(crate) fn new() -> Self {
         let (shutdown, _) = watch::channel(false);
         Self {
-            node_instance_id,
             local: Mutex::new(LocalAdmissionState::default()),
             budget_refills: AsyncMutex::new(HashMap::new()),
             shutdown,
@@ -467,7 +465,6 @@ impl GatewayAdmissionState {
         let request = PairedBudgetGrantRequest {
             organization_id: verifier.organization_id,
             grant_id: Uuid::now_v7(),
-            node_instance_id: self.node_instance_id.clone(),
             key: key_side
                 .as_ref()
                 .zip(key_amount)
@@ -1153,7 +1150,6 @@ mod tests {
         PairedBudgetGrantRequest {
             organization_id,
             grant_id: Uuid::now_v7(),
-            node_instance_id: "admission-test".to_owned(),
             key: Some(BudgetGrantSide {
                 policy,
                 amount_nanos,

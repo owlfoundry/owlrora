@@ -288,7 +288,7 @@ export class ApiError extends Error {
 
 export interface CommandStatus {
   persistence: "committed";
-  nodePublication: "applied" | "pending";
+  processPublication: "applied" | "pending";
   appliedRevision: number | null;
   databaseRevision: number | null;
 }
@@ -370,7 +370,7 @@ function readCommandStatus(response: Response): CommandStatus | null {
   if (response.headers.get("x-owlrora-command-status") !== "committed") {
     return null;
   }
-  const publication = response.headers.get("x-owlrora-node-publication");
+  const publication = response.headers.get("x-owlrora-process-publication");
   const parseRevision = (name: string): number | null => {
     const value = response.headers.get(name);
     if (value === null) return null;
@@ -379,7 +379,7 @@ function readCommandStatus(response: Response): CommandStatus | null {
   };
   return {
     persistence: "committed",
-    nodePublication: publication === "applied" ? "applied" : "pending",
+    processPublication: publication === "applied" ? "applied" : "pending",
     appliedRevision: parseRevision("x-owlrora-applied-revision"),
     databaseRevision: parseRevision("x-owlrora-database-revision"),
   };

@@ -506,7 +506,7 @@ describe("browser secret handling helpers", () => {
       status: 200,
       headers: new Headers({
         "x-owlrora-command-status": "committed",
-        "x-owlrora-node-publication": "pending",
+        "x-owlrora-process-publication": "pending",
       }),
       json: vi.fn().mockRejectedValue(new TypeError("body stream ended")),
     } as unknown as Response;
@@ -540,7 +540,7 @@ describe("browser secret handling helpers", () => {
         status: 204,
         headers: {
           "x-owlrora-command-status": "committed",
-          "x-owlrora-node-publication": "pending",
+          "x-owlrora-process-publication": "pending",
           "x-owlrora-applied-revision": "4",
           "x-owlrora-database-revision": "5",
         },
@@ -551,7 +551,7 @@ describe("browser secret handling helpers", () => {
     const response = await apiRequest<void>("/api/v1/test/actions/update", { method: "POST" });
     expect(response.commandStatus).toEqual({
       persistence: "committed",
-      nodePublication: "pending",
+      processPublication: "pending",
       appliedRevision: 4,
       databaseRevision: 5,
     });

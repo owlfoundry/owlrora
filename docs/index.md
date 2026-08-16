@@ -10,31 +10,40 @@ hero:
   tagline: Route Once. Reach All.
   actions:
     - theme: brand
-      text: Product Overview
-      link: /overview
+      text: Get started
+      link: /guide/getting-started
     - theme: alt
-      text: View on GitHub
-      link: https://github.com/owlfoundry/owlrora
+      text: Deployment guide
+      link: /deployment/
+    - theme: alt
+      text: Implementation status
+      link: /reference/implementation-status
 
 features:
-  - title: Available — Management plane
-    details: PostgreSQL-backed identity, tenancy, scoped management keys and sessions, external issuers, and an embedded console.
-  - title: Available — Automation
-    details: Generated typed CLI commands and a bounded stdio MCP adapter over the public management API.
-  - title: Planned — Gateway data plane
-    details: Product direction for protocol-native routing, reliability, budgets, usage, and observability.
-  - title: Available — Secure foundations
-    details: Explicit secret-root encryption, non-recoverable key digests, typed authorization, ETags, audit evidence, and immutable runtime publication.
+  - title: Protocol-native gateway
+    details: Preserve OpenAI, Anthropic, and Gemini request semantics while routing to compatible upstream deployments.
+  - title: Policy-driven reliability
+    details: Apply target selection, failover, retry, circuit, health, stickiness, timeout, budget, rate, and concurrency policy.
+  - title: Multi-tenant management
+    details: Keep deployment and organization authority explicit across users, JWT issuers, Management API keys, Gateway API keys, BYOK resources, and grants.
+  - title: Self-hosted modular monolith
+    details: Run one Rust server with an embedded React console, PostgreSQL durable state, Redis coordination, and no hidden control-plane service.
 ---
 
-::: warning Current status
-OwlRora currently ships its identity and management plane, embedded console, generated CLI/MCP clients, and secure PostgreSQL-backed runtime publication. The LLM ingress, upstream routing, Redis allowance coordination, and usage/observability data plane described here remain product direction.
+## Current delivery boundary
+
+::: warning Release status
+The latest published server release is **server-v0.0.3**. It contains the identity and management foundation, but not the Gateway plane described throughout the source-status sections of this site.
+
+The repository `main` branch at and after commit `da26113` contains the implemented Phase 2 Gateway, management, CLI/MCP, and Console work. That source state has passed repository CI and real PostgreSQL, Redis, HTTP, TLS, streaming, and WebSocket tests, but it has not yet been published under a new server or CLI release tag.
 :::
 
-## Target product
+OwlRora's normative target architecture lives under [`spec/`](https://github.com/owlfoundry/owlrora/tree/main/spec). The target specification is **not yet complete as a delivered product**. See [Implementation status](/reference/implementation-status) for the evidence-based boundary between released capability, implemented-but-unreleased source, and remaining target work.
 
-OwlRora is designed as a complete multi-tenant LLM gateway for Anthropic Messages, OpenAI Chat Completions, OpenAI Responses, Google Gemini, and a dedicated Codex subscription Responses transport.
+## Start with the right path
 
-OwlRora will own routing, usage accounting, observability, reliability policy, organization authorization, encrypted upstream credentials, scoped management API keys, and separate LLM-only gateway keys. Identity remains pluggable: OwlAuth can be integrated, a trusted external JWT can represent a local user, or a system administrator can provision users and organizations directly. A high-entropy environment management key authenticates the built-in API-key-only `seed_admin` user, which may operate directly or promote an existing local user. The independently released CLI package will contain the official `owlrora` management client and local stdio MCP mode, both using only the public management APIs.
-
-[Read the product overview →](/overview)
+- Evaluate the current source tree: [Getting started](/guide/getting-started)
+- Plan a production topology: [Deployment](/deployment/)
+- Configure every server setting: [Configuration](/deployment/configuration)
+- Operate upgrades, backups, and recovery: [Production operations](/deployment/operations)
+- Understand trust and secret boundaries: [Security model](/reference/security)

@@ -249,13 +249,6 @@ impl Application {
                 )
                 .fetch_all(self.store.pool())
                 .await?;
-                let watermarks = sqlx::query(
-                    "SELECT node_id, applied_revision, applied_security_revision,
-                            last_success_at, last_failure_at, safe_failure_class, heartbeat_at
-                     FROM node_watermarks ORDER BY node_id LIMIT 100",
-                )
-                .fetch_all(self.store.pool())
-                .await?;
                 Ok(json!({
                     "publication": &*status,
                     "journal": journal.into_iter().map(|row| json!({
@@ -264,15 +257,6 @@ impl Application {
                         "affected_scope": row.get::<Value, _>("affected_scope"),
                         "security_classification": row.get::<String, _>("security_classification"),
                         "committed_at": row.get::<chrono::DateTime<Utc>, _>("committed_at"),
-                    })).collect::<Vec<_>>(),
-                    "node_watermarks": watermarks.into_iter().map(|row| json!({
-                        "node_id": row.get::<String, _>("node_id"),
-                        "applied_revision": row.get::<i64, _>("applied_revision"),
-                        "applied_security_revision": row.get::<i64, _>("applied_security_revision"),
-                        "last_success_at": row.get::<Option<chrono::DateTime<Utc>>, _>("last_success_at"),
-                        "last_failure_at": row.get::<Option<chrono::DateTime<Utc>>, _>("last_failure_at"),
-                        "safe_failure_class": row.get::<Option<String>, _>("safe_failure_class"),
-                        "heartbeat_at": row.get::<chrono::DateTime<Utc>, _>("heartbeat_at"),
                     })).collect::<Vec<_>>(),
                 }))
             }

@@ -3849,9 +3849,7 @@ mod tests {
         );
     }
 
-    async fn test_application(
-        test_name: &str,
-    ) -> Option<(PgStore, Arc<RuntimePublisher>, Application, String)> {
+    async fn test_application() -> Option<(PgStore, Arc<RuntimePublisher>, Application, String)> {
         let store = connect_from_environment().await?;
         let redis_url = std::env::var("OWLRORA_TEST_REDIS_URL").ok()?;
         let seed_key = generate_management_key().expose_once();
@@ -3866,10 +3864,6 @@ mod tests {
                     "http://127.0.0.1:8080".to_owned(),
                 ),
                 ("OWLRORA_REDIS_URL".to_owned(), redis_url),
-                (
-                    "OWLRORA_NODE_INSTANCE_ID".to_owned(),
-                    format!("{test_name}-{}", Uuid::now_v7()),
-                ),
                 ("OWLRORA_SEED_ADMIN_API_KEY".to_owned(), seed_key.clone()),
                 (
                     "OWLRORA_SECRET_ROOT".to_owned(),
@@ -3886,13 +3880,9 @@ mod tests {
             )
             .unwrap(),
         );
-        let runtime = RuntimePublisher::start(
-            store.clone(),
-            Arc::clone(&secrets),
-            format!("{test_name}-{}", Uuid::now_v7()),
-        )
-        .await
-        .unwrap();
+        let runtime = RuntimePublisher::start(store.clone(), Arc::clone(&secrets))
+            .await
+            .unwrap();
         let application = Application::new(
             store.clone(),
             Arc::clone(&runtime),
@@ -3906,9 +3896,7 @@ mod tests {
     #[tokio::test]
     async fn credential_create_replays_with_a_keyed_request_fingerprint() {
         let _database_guard = shared_database_test_lock().await;
-        let Some((store, _runtime, application, seed_key)) =
-            test_application("credential-create-idempotency-test").await
-        else {
+        let Some((store, _runtime, application, seed_key)) = test_application().await else {
             return;
         };
         let identity = application
@@ -3984,9 +3972,7 @@ mod tests {
             .with_test_writer()
             .with_env_filter("error")
             .try_init();
-        let Some((store, runtime, application, seed_key)) =
-            test_application("credential-replace-test").await
-        else {
+        let Some((store, runtime, application, seed_key)) = test_application().await else {
             return;
         };
         let identity = application
@@ -4117,9 +4103,7 @@ mod tests {
     #[tokio::test]
     async fn expired_codex_refresh_lease_is_terminalized_without_replay() {
         let _database_guard = shared_database_test_lock().await;
-        let Some((store, runtime, application, _)) =
-            test_application("codex-refresh-reconcile-test").await
-        else {
+        let Some((store, runtime, application, _)) = test_application().await else {
             return;
         };
         let credential_id = Uuid::now_v7();

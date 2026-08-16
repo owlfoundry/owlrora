@@ -5,7 +5,7 @@
 - PostgreSQL 17 on `127.0.0.1:55432`
 - Redis 7.4 on `127.0.0.1:56379`
 
-Both services bind to loopback by default. PostgreSQL uses a named volume; Redis is disposable coordination state.
+Both services bind to loopback by default. PostgreSQL uses a named volume. Redis holds coordination state; both are disposable in this development stack, but Redis is a required runtime dependency for every current non-`health-only` server profile.
 
 From the repository root:
 
@@ -15,7 +15,9 @@ cp .env.example .env
 make dev
 ```
 
-`make dev` validates the local environment, rebuilds embedded web assets, starts and waits for healthy PostgreSQL and Redis containers, then runs OwlRora in the foreground. The infrastructure can also be managed independently:
+`make dev` validates the local environment, rebuilds embedded web assets, starts and waits for healthy PostgreSQL and Redis containers, then runs OwlRora in the foreground. The example config uses the `full` profile and includes the required database URL, Redis URL, public origin, test seed key, and test secret root. Replicas require no durable application identity.
+
+Manage infrastructure independently:
 
 ```bash
 make dev-up
@@ -26,12 +28,19 @@ make dev-redis
 make dev-down
 ```
 
-`make dev-reset` removes the containers and PostgreSQL volume before starting healthy empty services. It intentionally deletes local development data.
+`make dev-reset` removes containers and the PostgreSQL named volume before starting healthy empty services. It intentionally deletes local development state.
 
-Optional Compose overrides can be placed in `dev/.env`:
+Optional Compose overrides:
 
 ```bash
 cp dev/.env.example dev/.env
 ```
 
-Keep the root `OWLRORA_DATABASE_URL` synchronized with any PostgreSQL host, port, database, user, or password override. Changing the initialization database or credentials does not update an existing PostgreSQL volume; use `make dev-reset` when that local data may be deleted and recreated. Redis starts with the development stack but is not consumed by the current server until the Redis coordination adapter is implemented.
+Keep root `.env` values synchronized with Compose overrides:
+
+- `OWLRORA_DATABASE_URL`
+- `OWLRORA_REDIS_URL`
+
+Changing database initialization credentials does not update an existing PostgreSQL volume. Use `make dev-reset` only when deleting that local data is acceptable.
+
+The fixed values in `.env.example` and `dev/.env.example` are public development credentials. Generate independent values and follow the [deployment guide](../docs/deployment/index.md) outside disposable local development.

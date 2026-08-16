@@ -183,7 +183,7 @@ const OPERATIONS_PATHS: Record<
     api: "/api/v1/system/operations/runtime",
     browser: "/admin/operations/runtime",
     title: "Runtime",
-    description: "Applied revision, publication state, journal, and node watermarks.",
+    description: "Current-process applied revision and publication state plus the durable journal.",
   },
   "admin-operations-coordination": {
     api: "/api/v1/system/operations/coordination",
@@ -220,7 +220,7 @@ const OPERATIONS_PATHS: Record<
     api: "/api/v1/system/operations/target-health",
     browser: "/admin/operations/target-health",
     title: "Target health",
-    description: "Current-node circuit state and cached shared probe observations.",
+    description: "Current-process circuit state and cached shared probe observations.",
   },
   "admin-operations-usage-pipeline": {
     api: "/api/v1/system/operations/usage-pipeline",
@@ -270,7 +270,7 @@ export function OperationsPage({ routeId, me }: { routeId: string; me: CurrentPr
         >
           <ConfirmAction
             title="Reconcile runtime generation"
-            consequence="The node refreshes from one PostgreSQL revision fence. This is an audited operations command, not a bypass of normal publication."
+            consequence="The process handling this request refreshes from one PostgreSQL revision fence. This is an audited operations command, not a bypass of normal publication."
             label="Reconcile runtime"
             onConfirm={async () => {
               await apiRequest<JsonValue>("/api/v1/system/operations/runtime/actions/reconcile", {

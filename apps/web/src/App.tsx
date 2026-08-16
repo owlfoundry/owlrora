@@ -463,13 +463,13 @@ function AppShell({
         {signOutError === null ? null : <ApiErrorState error={signOutError} compact />}
         {commandStatus === null ? null : (
           <div
-            className={`alert ${commandStatus.nodePublication === "applied" ? "alert-success" : "alert-warning"}`}
+            className={`alert ${commandStatus.processPublication === "applied" ? "alert-success" : "alert-warning"}`}
             role="status"
           >
             <strong>Command committed</strong>
             <span>
-              {commandStatus.nodePublication === "applied"
-                ? "This node has applied the current runtime generation."
+              {commandStatus.processPublication === "applied"
+                ? "The process handling this command has applied the current runtime generation."
                 : "Runtime publication is pending; the committed state remains authoritative."}
             </span>
             {commandStatus.appliedRevision === null ||

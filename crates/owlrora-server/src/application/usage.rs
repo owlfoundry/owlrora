@@ -687,7 +687,6 @@ fn breakdown_dimension_sql(
 #[derive(Clone, Debug, Serialize)]
 pub struct TargetHealthView {
     pub scope: &'static str,
-    pub node_id: String,
     pub runtime_revision: i64,
     pub targets: Vec<TargetHealthItem>,
 }
@@ -723,7 +722,6 @@ pub struct CachedTargetProbeView {
     pub cooldown_until_unix_ms: Option<u64>,
     pub recovery_started_at_unix_ms: Option<u64>,
     pub observed_at_unix_ms: u64,
-    pub source_node_id: String,
     pub latency_millis: u64,
     pub http_status: Option<u16>,
     pub outcome: String,
@@ -808,7 +806,6 @@ impl Application {
                             .summary
                             .recovery_started_at_unix_ms,
                         observed_at_unix_ms: observation.summary.observed_at_unix_ms,
-                        source_node_id: observation.summary.source_node_id.clone(),
                         latency_millis: observation.latency_millis,
                         http_status: observation.http_status,
                         outcome: observation.outcome.to_owned(),
@@ -831,12 +828,7 @@ impl Application {
             }
         }
         Ok(TargetHealthView {
-            scope: "current_node_with_cached_shared_probe_observations",
-            node_id: self
-                .config
-                .node_instance_id
-                .clone()
-                .unwrap_or_else(|| "unconfigured".to_owned()),
+            scope: "current_process_with_cached_shared_probe_observations",
             runtime_revision: generation.snapshot.revision,
             targets,
         })

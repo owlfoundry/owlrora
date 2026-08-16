@@ -65,15 +65,13 @@ impl RuntimePublisher {
     pub async fn start(
         store: PgStore,
         secrets: Arc<SecretService>,
-        node_id: String,
     ) -> Result<Arc<Self>, StoreError> {
-        Self::start_with_egress_dns_overrides(store, secrets, node_id, HashMap::new()).await
+        Self::start_with_egress_dns_overrides(store, secrets, HashMap::new()).await
     }
 
     pub(crate) async fn start_with_egress_dns_overrides(
         store: PgStore,
         secrets: Arc<SecretService>,
-        node_id: String,
         egress_dns_overrides: HashMap<String, SocketAddr>,
     ) -> Result<Arc<Self>, StoreError> {
         let egress_dns_overrides = Arc::new(egress_dns_overrides);
@@ -99,7 +97,7 @@ impl RuntimePublisher {
         });
         let task_publisher = Arc::clone(&publisher);
         let task = tokio::spawn(async move {
-            run_publication_loop(task_publisher, store, node_id, receiver).await;
+            run_publication_loop(task_publisher, store, receiver).await;
         });
         *publisher.task.lock().await = Some(task);
         Ok(publisher)
@@ -202,7 +200,6 @@ fn security_revision_is_current(
 async fn run_publication_loop(
     publisher: Arc<RuntimePublisher>,
     store: PgStore,
-    node_id: String,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -212,24 +209,16 @@ async fn run_publication_loop(
                 let database_revisions = publication_revisions(&store).await;
                 match database_revisions {
                     Ok((revision, security_revision)) if revision > publisher.capture().snapshot.revision => {
-                        match publisher.refresh_now().await {
-                            Ok(applied) => {
-                                let security = publisher.capture().snapshot.security_revision;
-                                let _ = update_watermark(&store, &node_id, applied, security, None).await;
-                            }
-                            Err(error) => {
-                                let generation = publisher.capture();
-                                publisher.status.store(Arc::new(PublicationStatus {
-                                    database_revision: revision,
-                                    database_security_revision: security_revision,
-                                    applied_revision: generation.snapshot.revision,
-                                    built_at: generation.snapshot.built_at,
-                                    confirmed_at: Utc::now(),
-                                    last_error: Some(error.to_string()),
-                                }));
-                                let security = generation.snapshot.security_revision;
-                                let _ = update_watermark(&store, &node_id, generation.snapshot.revision, security, Some("publication_failed")).await;
-                            }
+                        if let Err(error) = publisher.refresh_now().await {
+                            let generation = publisher.capture();
+                            publisher.status.store(Arc::new(PublicationStatus {
+                                database_revision: revision,
+                                database_security_revision: security_revision,
+                                applied_revision: generation.snapshot.revision,
+                                built_at: generation.snapshot.built_at,
+                                confirmed_at: Utc::now(),
+                                last_error: Some(error.to_string()),
+                            }));
                         }
                     }
                     Ok((revision, security_revision)) => {
@@ -242,8 +231,6 @@ async fn run_publication_loop(
                             confirmed_at: Utc::now(),
                             last_error: None,
                         }));
-                        let security = generation.snapshot.security_revision;
-                        let _ = update_watermark(&store, &node_id, generation.snapshot.revision, security, None).await;
                     }
                     Err(error) => {
                         let current = publisher.status();
@@ -836,36 +823,6 @@ async fn publication_revisions(store: &PgStore) -> Result<(i64, i64), StoreError
     Ok((row.get("current_revision"), row.get("security_revision")))
 }
 
-async fn update_watermark(
-    store: &PgStore,
-    node_id: &str,
-    applied_revision: i64,
-    applied_security_revision: i64,
-    error: Option<&str>,
-) -> Result<(), StoreError> {
-    sqlx::query(
-        "INSERT INTO node_watermarks(
-            node_id, applied_revision, applied_security_revision, last_success_at,
-            last_failure_at, safe_failure_class, heartbeat_at
-         ) VALUES ($1,$2,$3,CASE WHEN $4::text IS NULL THEN now() END,
-                   CASE WHEN $4::text IS NOT NULL THEN now() END,$4,now())
-         ON CONFLICT (node_id) DO UPDATE SET
-            applied_revision = EXCLUDED.applied_revision,
-            applied_security_revision = EXCLUDED.applied_security_revision,
-            last_success_at = COALESCE(EXCLUDED.last_success_at, node_watermarks.last_success_at),
-            last_failure_at = COALESCE(EXCLUDED.last_failure_at, node_watermarks.last_failure_at),
-            safe_failure_class = EXCLUDED.safe_failure_class,
-            heartbeat_at = now()",
-    )
-    .bind(node_id)
-    .bind(applied_revision)
-    .bind(applied_security_revision)
-    .bind(error)
-    .execute(store.pool())
-    .await?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -1310,13 +1267,9 @@ mod tests {
         let secrets = secret_service(91);
         let fixture = insert_runtime_fixture(&store, &secrets).await;
         allocate_fixture_revision(&store, "runtime_fixture.created", false).await;
-        let publisher = RuntimePublisher::start(
-            store.clone(),
-            Arc::clone(&secrets),
-            format!("runtime-fixture-{}", Uuid::now_v7()),
-        )
-        .await
-        .unwrap();
+        let publisher = RuntimePublisher::start(store.clone(), Arc::clone(&secrets))
+            .await
+            .unwrap();
         let first = publisher.capture();
         let verifier = first.snapshot.gateway_keys.get(&fixture.lookup).unwrap();
         assert_eq!(

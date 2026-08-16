@@ -4,6 +4,8 @@
 
 The CLI provides generated typed commands for OwlRora's public Management HTTP API, local management profiles, a bounded stdio MCP adapter, structured JSON or table output, and checksum-verified native self-update. It does not link or launch the server.
 
+The latest published `cli-v0.0.3` predates the Phase 2 Gateway-management inventory present on repository `main` at and after `da26113`. Build the CLI from matching source when evaluating an unreleased server revision.
+
 ```bash
 owlrora --version
 owlrora --server-url https://owlrora.example \

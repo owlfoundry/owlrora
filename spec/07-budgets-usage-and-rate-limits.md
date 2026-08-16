@@ -17,7 +17,7 @@ An embedding platform owns billing periods, payments, credits, refunds, subscrip
 
 Only a Gateway API key is a quota-bearing request principal. Direct trusted-JWT LLM requests still require issuer/token ceilings, an active local user and membership, explicit organization selection, and route eligibility, and their usage is still recorded, but OwlRora does not fabricate a key or apply Gateway-key/origin-pool budget, rate, or concurrency policy to them. A deployment that requires quota enforcement issues Gateway API keys and may disable direct-JWT LLM access at the trusted issuer.
 
-Budget decisions are intentionally approximate. Provider usage can be late, absent, duplicated by retry, or different from estimates; distributed allowance can drift during node/Redis failure. OwlRora reports this uncertainty rather than claiming payment-grade accounting.
+Budget decisions are intentionally approximate. Provider usage can be late, absent, duplicated by retry, or different from estimates; distributed allowance can drift during process/Redis failure. OwlRora reports this uncertainty rather than claiming payment-grade accounting.
 
 ## 2. Route groups and accounting origin
 
@@ -75,9 +75,9 @@ A Gateway-key attempt is evaluated against exactly two monetary policies:
 
 The origin budgets are collective across all Gateway API keys in the organization:
 
-| Origin policy | Applies to | Configuration authority |
-| --- | --- | --- |
-| `system_provided` | attempts using granted system deployments | system administrator assigns a limit to the exact organization |
+| Origin policy       | Applies to                                        | Configuration authority                                                      |
+| ------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `system_provided`   | attempts using granted system deployments         | system administrator assigns a limit to the exact organization               |
 | `organization_byok` | attempts using same-organization BYOK deployments | organization owner/admin configures its own limit within deployment ceilings |
 
 A system administrator may also configure the BYOK ceiling but does not become the owner of BYOK credentials. Organization actors may read the effective system-provided allocation and its state but cannot expand or reset it. A key creator has no special budget authority. Creating an organization also creates both stable origin-policy rows in `suspended` state with no active version. The initial state is an explicit deny until the appropriate authority publishes a finite version; a missing row after initialization is an integrity fault, not an unlimited policy.
@@ -156,18 +156,19 @@ Redis-compatible storage coordinates coarse enforcing allowances rather than act
 ```mermaid
 flowchart LR
     PG[(PostgreSQL policy)] --> Snapshot[Local policy snapshot]
-    Snapshot --> Node[Gateway node]
-    Redis[(Redis-compatible allowances)] -->|amortized paired grant| Node
-    Node -->|local reserve and settle| Request[Gateway-key attempts]
-    Node -->|batched usage deltas| PG
+    Snapshot --> Process[Gateway process]
+    Redis[(Redis-compatible allowances)] -->|amortized paired grant| Process
+    Process -->|local reserve and settle| Request[Gateway-key attempts]
+    Process -->|batched usage deltas| PG
 ```
 
 ### 7.1 Paired allowance grants
 
-A node obtains a bounded `AllowanceGrant` for one Gateway key and one organization origin pool:
+A gateway process obtains a bounded `AllowanceGrant` for one Gateway key and one organization origin pool. Replicas have no durable application identity; each grant has its own globally unique identity:
 
 ```text
 AllowanceGrant {
+    grant_id,
     organization_id,
     gateway_api_key_id,
     gateway_key_policy_generation,
@@ -175,7 +176,6 @@ AllowanceGrant {
     origin_class,
     origin_policy_generation,
     origin_epoch_id,
-    node_instance_id,
     gateway_key_amount?,
     origin_pool_amount?,
     granted_at,
@@ -185,11 +185,11 @@ AllowanceGrant {
 
 An amount is present only for a policy in `enforce` mode. At least one amount is present or no coordinator grant is needed. Redis atomically allocates every present amount from organization-colocated counters. In Redis Cluster, keys use one organization-qualified hash tag so a paired operation remains within one slot; OwlRora never requires cross-slot atomicity. Allocation immediately charges the full grant against each enforcing distributed limit.
 
-A grant is specific to the key/origin-policy pair. A route that can use both system and BYOK targets can therefore draw from two local paired grants while retaining one shared key counter. Atomic Redis allocation prevents either origin path from bypassing the key's overall remaining amount. Grant size is bounded by absolute and percentage ceilings for both policies, so one node cannot conservatively consume a large fraction of either budget unnecessarily.
+A grant is specific to the key/origin-policy pair. A route that can use both system and BYOK targets can therefore draw from two local paired grants while retaining one shared key counter. Atomic Redis allocation prevents either origin path from bypassing the key's overall remaining amount. Grant size is bounded by absolute and percentage ceilings for both policies, so one process cannot conservatively consume a large fraction of either budget unnecessarily.
 
-Requests reserve and settle against the node's local grant without a Redis round trip. When actual cost is below the estimate, the difference returns to the same local grant. The node requests another grant when either relevant local amount crosses a threshold. Requests are singleflight/coalesced by exact policy pair so concurrent traffic does not stampede Redis. An estimate larger than a slice ceiling uses one atomically charged request-sized one-shot grant within every enforcing remaining limit, or the candidate is denied.
+Requests reserve and settle against the process-local grant without a Redis round trip. When actual cost is below the estimate, the difference returns to the same local grant. The process requests another grant when either relevant local amount crosses a threshold. Requests are singleflight/coalesced by exact policy pair so concurrent traffic does not stampede Redis. An estimate larger than a slice ceiling uses one atomically charged request-sized one-shot grant within every enforcing remaining limit, or the candidate is denied.
 
-A live node periodically or on graceful grant close returns its final unused amount through an idempotent Redis operation. Grant expiry stops spending but does not automatically restore an unreturned amount: after node crash, each unreturned remainder is conservatively treated as consumed for its epoch. Actual cost exceeding an estimate consumes remaining local allowance, records debt against every enforcing policy when necessary, and blocks later local admission until the debt is covered or an administrative epoch change occurs.
+A live process periodically or on graceful grant close returns its final unused amount through an idempotent Redis operation. Grant expiry stops spending but does not automatically restore an unreturned amount: after process loss, each unreturned remainder is conservatively treated as consumed for its epoch. Actual cost exceeding an estimate consumes remaining local allowance, records debt against every enforcing policy when necessary, and blocks later local admission until the debt is covered or an administrative epoch change occurs.
 
 Record-only policies use the bounded aggregate pipeline and do not receive spend authority from Redis. Their displayed usage can lag and never masquerades as an exact remaining balance.
 
@@ -209,11 +209,11 @@ PostgreSQL remains policy and aggregate authority. Redis persistence and replica
 Each enforcing policy explicitly chooses coordination failure behavior:
 
 - `deny` — no new allowance is available;
-- `bounded_local` — an eligible already-running node may spend a Redis-issued emergency grant it already holds.
+- `bounded_local` — an eligible already-running process may spend a Redis-issued emergency grant it already holds.
 
-An `EmergencyGrant` uses the same paired policy identities, epochs, node identity, charging, and idempotent-return model. Redis issues it only while healthy and charges every included amount immediately. A process that starts or restarts while coordination is unavailable has no grant and denies affected admission. Newly scaled replicas likewise deny until Redis issues and charges their grants. Consumed or stranded emergency amount remains charged, so restart and repeated outages cannot recycle budget.
+An `EmergencyGrant` uses the same globally unique grant identity, paired policy identities, epochs, charging, and idempotent-return model. Redis issues it only while healthy and charges every included amount immediately. A process that starts or restarts while coordination is unavailable has no grant and denies affected admission. Newly scaled replicas likewise deny until Redis issues and charges their grants. Consumed or stranded emergency amount remains charged, so restart and repeated outages cannot recycle budget.
 
-The deployment configures `max_emergency_nodes` and fleet-wide reserve ceilings. With per-node amount `E_p` for policy `p` and cohort bound `N`, at most `N × E_p` may be uncertain or stranded for that policy, already included in charged consumption. This trade-off is visible in management status and telemetry. Redis degradation does not make unrelated gateway capabilities unready.
+Each policy uses its ordinary `max_slice_nanos` as the per-grant emergency ceiling and configures `emergency_reserve_nanos` as one fleet-wide reserve ceiling. Redis atomically refuses issuance once the sum of outstanding emergency grants would exceed the fleet-wide ceiling; this bound depends on grant state, not replica registration or identity. For policy `p`, at most its fleet-wide precharged reserve `E_fleet,p` may be uncertain or stranded, already included in charged consumption. This trade-off is visible in management status and telemetry. Redis degradation does not make unrelated gateway capabilities unready.
 
 A verified restore may retain generations and counters only when recovery proves that no coordinator state was lost. Actual or uncertain loss installs new recovery generations and fences old local/emergency grants after bounded propagation.
 
@@ -270,7 +270,7 @@ Activation is a recoverable handshake:
 5. arm the candidate through fenced Redis compare-and-swap without retiring the prior generation;
 6. persist `coordinator_armed` only while the exact candidate still matches;
 7. atomically publish the durable active pointer and runtime configuration journal record;
-8. nodes stop new spending from prior local grants after applying the generation and return proven-unused amount asynchronously;
+8. processes stop new spending from prior local grants after applying the generation and return proven-unused amount asynchronously;
 9. only after durable activation, install a bounded prior-generation retirement cutoff and finalize after acknowledgements or cutoff.
 
 During a same-epoch dual-generation window, generations share one monotonic scope ledger; they do not receive duplicate remaining budget, rate refill, or concurrency capacity. A crash before durable activation leaves the prior generation allocatable. A crash after activation resumes retirement. Expansion may remain pending without disabling prior active policy, while a missed tightening deadline fails closed.
@@ -297,7 +297,7 @@ The same calculated attempt cost is attributed to the key budget and selected or
 
 Settlement is process-idempotent. Abrupt crash can lose local settlement detail, but the full distributed grant was already charged, so unreturned allowance remains conservative. Provider attempt usage still enters best-effort aggregates and telemetry when known.
 
-For each enforcing policy `p`, let `N` be its emergency-node bound, `E_p` its per-node precharged reserve, `I` the maximum concurrently dispatched attempts that can charge it, and `U_p` the finite maximum actual-cost excess over one reservation. Emergency uncertainty is at most `N × E_p`; spend beyond precharged grants is bounded by `I × U_p`. A policy without finite `U_p` cannot claim a hard drift bound and must use a conservative fixed reservation, deny, or switch explicitly to record-only.
+For each enforcing policy `p`, let `E_fleet,p` be its fleet-wide precharged emergency reserve, `I` the maximum concurrently dispatched attempts that can charge it, and `U_p` the finite maximum actual-cost excess over one reservation. Emergency uncertainty is at most `E_fleet,p`; spend beyond precharged grants is bounded by `I × U_p`. A policy without finite `U_p` cannot claim a hard drift bound and must use a conservative fixed reservation, deny, or switch explicitly to record-only.
 
 For same-epoch tightening, stale-policy spend is bounded by the old generation's globally remaining amount at desired commit plus `I × U_p`. Let `R_epoch,p` be the durable automatic recovery cap. Worst-case recovery adds at most `R_epoch,p + I × U_p` for that policy's epoch. Management displays each key and origin bound separately rather than summing them as duplicate monetary spend.
 
@@ -337,7 +337,7 @@ Rate policies apply only to Gateway API keys and use token-bucket semantics for 
 Distributed operation follows the same allowance pattern:
 
 - Redis grants bounded tokens for one exact Gateway key;
-- nodes consume tokens locally;
+- gateway processes consume tokens locally;
 - refill metadata and grant expiry bound drift;
 - a strict per-request Redis token bucket may be configured when stronger precision is worth the coordinator load.
 
@@ -347,11 +347,11 @@ Protocol-compatible `Retry-After` and safe remaining estimates may be returned. 
 
 Three distinct mechanisms exist:
 
-1. **node overload protection** — local process/task/connection limits applying to all traffic;
+1. **process overload protection** — local task/connection limits applying to all traffic;
 2. **target protection** — local endpoint/deployment in-flight ceilings used by routing for all traffic;
 3. **Gateway-key concurrency policy** — optional approximate or strict limit for one key.
 
-Gateway-key concurrency is approximate by default through bounded per-node slots. Strict mode acquires one Redis lease per request and intentionally pays per-request coordinator load. Streams have finite maximum duration, leases use coordinator time, and the request ends before lease reclaim. Direct JWT requests have no Gateway-key concurrency identity; they remain subject to node and target protection.
+Gateway-key concurrency is approximate by default through bounded process-local slots. Strict mode acquires one Redis lease per request and intentionally pays per-request coordinator load. Streams have finite maximum duration, leases use coordinator time, and the request ends before lease reclaim. Direct JWT requests have no Gateway-key concurrency identity; they remain subject to process and target protection.
 
 ## 13. Admission order
 

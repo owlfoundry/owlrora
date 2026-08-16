@@ -829,7 +829,7 @@ async fn attach_command_status(
                 "pending"
             };
         response.headers_mut().insert(
-            HeaderName::from_static("x-owlrora-node-publication"),
+            HeaderName::from_static("x-owlrora-process-publication"),
             HeaderValue::from_static(publication_state),
         );
         if let Ok(value) = HeaderValue::from_str(&publication.applied_revision.to_string()) {

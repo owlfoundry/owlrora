@@ -163,10 +163,6 @@ impl Application {
         config: Arc<ServerConfig>,
         secrets: Arc<SecretService>,
     ) -> Result<Self, crate::application::ApplicationError> {
-        let node_instance_id = config
-            .node_instance_id
-            .clone()
-            .unwrap_or_else(|| "unconfigured".to_owned());
         let usage = UsageAggregator::new(
             store.clone(),
             UsageConfig {
@@ -188,7 +184,7 @@ impl Application {
             config,
             secrets,
             coordinator: None,
-            gateway_admission: Arc::new(GatewayAdmissionState::new(node_instance_id)),
+            gateway_admission: Arc::new(GatewayAdmissionState::new()),
             target_protection,
             target_probes: None,
             usage,
@@ -207,16 +203,10 @@ impl Application {
 
     #[must_use]
     pub fn with_coordinator(mut self, coordinator: Arc<RedisCoordinator>) -> Self {
-        let node_instance_id = self
-            .config
-            .node_instance_id
-            .clone()
-            .unwrap_or_else(|| "unconfigured".to_owned());
         self.target_probes = Some(TargetProbeWorker::new(
             Arc::clone(&self.runtime),
             Arc::clone(&coordinator),
             Arc::clone(&self.target_protection),
-            node_instance_id,
         ));
         self.coordinator = Some(coordinator);
         self

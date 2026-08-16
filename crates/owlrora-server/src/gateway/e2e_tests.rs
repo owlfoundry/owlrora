@@ -1743,10 +1743,6 @@ fn server_config(
         "https://console.owlrora.test".to_owned(),
     );
     values.insert(
-        "OWLRORA_NODE_INSTANCE_ID".to_owned(),
-        format!("gateway-e2e-{}", Uuid::now_v7()),
-    );
-    values.insert(
         "OWLRORA_SECRET_ROOT".to_owned(),
         URL_SAFE_NO_PAD.encode([117_u8; 32]),
     );

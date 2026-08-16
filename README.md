@@ -4,121 +4,73 @@
 
 **Route Once. Reach All.**
 
-OwlRora is a self-hosted AI gateway for routing requests across models and providers, observing usage and latency, and applying reliability and tenant policy in one place.
+OwlRora is a self-hosted, multi-tenant LLM gateway for routing protocol-native requests across explicit model deployments, enforcing tenant and reliability policy, and observing logical requests and physical attempts.
 
 > [!IMPORTANT]
-> OwlRora currently ships its identity and management plane: PostgreSQL-backed tenancy and authorization, scoped Management API keys and sessions, external identity/OIDC administration, an embedded management console, and generated CLI/MCP clients. LLM ingress protocols, provider routing, Redis-backed allowance coordination, and usage accounting remain product direction rather than shipped data-plane behavior.
+> The latest published `server-v0.0.3` and `cli-v0.0.3` releases contain the identity and management foundation but predate the Phase 2 Gateway plane. Repository `main` at and after commit `da26113` contains the implemented Gateway, management, CLI/MCP, and Console source described below. The complete target specification is not yet implemented; see [Implementation status](docs/reference/implementation-status.md).
 
-## RORA
+## Implemented on `main`
 
-- **Routing** — route across models and providers without coupling applications to one upstream.
-- **Observability** — measure requests, tokens, cost, latency, outcomes, and routing decisions.
-- **Reliable** — apply retries, fallbacks, circuit breaking, and rate limits at the gateway boundary.
-- **AI** — keep the product focused on operational AI workloads.
+- PostgreSQL-backed users, organizations, memberships, roles, system grants, invitations, audit, idempotency, and runtime revisions.
+- Separate deployment/organization Management API keys, key-derived sessions, Gateway API keys, external JWT/JWKS, and bounded OIDC browser login.
+- Independent upstream endpoints, credentials, model deployments, first-class model routes and targets, catalog grants, and versioned policies.
+- Native-compatible Anthropic Messages, OpenAI Chat Completions, OpenAI Responses HTTP/SSE/WebSocket, and Gemini ingress.
+- Matching upstream transports, static/workload/cloud credentials, AWS SigV4, Azure/Google token exchange, and the explicitly modeled community-maintained Codex subscription adapter.
+- Tier/weight routing, retry/failover, stickiness, passive and active health, circuits, timeouts, and process-local capacity bounds.
+- Redis-coordinated key/origin budgets, rate limits, strict/approximate concurrency, bounded recovery, and logical/attempt usage aggregation.
+- Embedded GitLab-like React Console, generated typed `owlrora` CLI, and bounded local stdio MCP mode over public Management APIs.
+- Non-root server image, automatic PostgreSQL migrations, deployment profiles, public `/health`, and protected operations evidence.
 
-## Product direction
+## Product boundaries
 
-OwlRora is an LLM gateway targeting native compatibility with:
+OwlRora is not a billing ledger, identity provider, prompt manager, agent framework, semantic cache, vector database, training platform, or generic reverse-proxy/plugin host.
 
-- Anthropic Messages API;
-- OpenAI Chat Completions API;
-- OpenAI Responses API;
-- Google Gemini API.
+OwlRora preserves native Anthropic, OpenAI, and Gemini semantics rather than forcing every protocol through one lossy universal request model. Client-facing models are first-class routes. Endpoints, credentials, and deployments remain separate reusable resources.
 
-It also models OpenAI Codex subscription authentication as a community-maintained, best-effort upstream credential for the Responses semantic family. OwlRora ships its current adapter behavior with each build rather than promising a compatibility-profile service or SLA. Other provider subscription integrations are not part of the design.
+Only Gateway API keys are quota-bearing request principals. Every key has a non-empty stable route-ID allowlist and one finite overall budget. Every physical key attempt also settles against the organization pool for the target's actual `system_provided` or `organization_byok` origin. Direct-JWT traffic is observed without fabricating a key budget.
 
-Compatibility endpoints and upstream transports are separate boundaries. Requests remain protocol-native while OwlRora selects an eligible model deployment from explicit credentials, endpoints, transports, and route targets.
-
-## Gateway policy
-
-OwlRora owns organization/user authorization, scoped gateway credentials, model access, approximate budgets, rate and concurrency limits, usage attribution, routing health, and operational observability.
-
-It does not implement billing, payments, commercial top-up flows, or product-specific reset workflows. A commercial platform owns those workflows and updates OwlRora policy through the management boundary.
-
-## Multi-tenant and embeddable
-
-OwlRora owns its internal users, organizations, memberships, roles, and resource attribution. It does not require one identity product.
-
-Target identity and provisioning modes include:
-
-- scoped management API keys for direct API, CLI, MCP, and key-derived console sessions;
-- a high-entropy environment management API key for the built-in API-key-only `seed_admin` user;
-- optional OwlAuth integration;
-- trusted external JWT issuers that map an authenticated subject to an OwlRora user;
-- direct system-administrator creation and management of users and organizations;
-- synthetic users and organizations for automation, testing, or embedding into another platform.
-
-Authentication proves a principal. OwlRora remains authoritative for organization membership, roles, budgets, model access, credentials, and AI resources.
-
-The `seed_admin` user may administer the deployment directly or promote an existing active local user to system administrator. Both use the same authorizer and audit path. Management API keys and LLM gateway API keys are separate credential classes with different scopes and accepted surfaces. A system administrator manages deployment-wide configuration, including reusable upstream credentials, endpoints, model deployments, shared routes, secret-custody status, and direct tenant provisioning. Organization administrators manage members and organization policy within that system boundary.
-
-## Design principles
-
-- **Protocol compatibility without domain coupling** — preserve client-facing API semantics at the edge and isolate provider-specific translation.
-- **Organization-qualified authority** — tenant resources are organization-owned and every creation/command is attributed to the actual typed user, key, or system principal without making creator attribution runtime authority.
-- **Unified identity path** — management keys/key-derived sessions, external sessions, trusted JWTs, and gateway keys converge on one typed authorization pipeline without making OwlAuth a dependency or conflating control-plane and LLM credentials.
-- **Protocol-native proxying** — preserve Anthropic, OpenAI, and Gemini semantics rather than forcing one lossy universal request model.
-- **Composable upstream catalog** — model credentials, endpoints, deployments, and route targets as separate reusable resources.
-- **Approximate operational enforcement** — use bounded local allowance and optional Redis-compatible coordination with availability-first bounded recovery, without pretending to be a billing ledger.
-- **Encrypted recoverable secrets** — hash durable management keys and gateway keys; directly encrypt upstream secrets from an explicit environment root in the official server binary, with a small static-composition SPI for user-provided custody.
-- **Observable routing** — retain structured evidence explaining selection, attempts, latency, usage, and cost without default prompt/response logs.
-- **First-party automation** — ship an independent official CLI package containing the `owlrora` management client and local stdio MCP mode; both use only scoped public management HTTP APIs and retain server authorization, ETag, audit, and one-time-secret rules.
-
-## Repository status and specifications
-
-The repository currently contains a Rust/Axum identity and management server, PostgreSQL migrations, an embedded React console, generated typed CLI and bounded stdio MCP clients, native CLI self-update, the provider-neutral key-custody SPI, package/container validation, and separate CLI/server release automation for crates, GitHub Releases, and immutable versioned server images. The LLM gateway data plane remains planned.
-
-Target design lives under [`spec/`](spec/README.md). The thirteen specifications proceed from product and system boundaries through identity, authorization, upstream catalog, protocols, routing, budgets, observability, local-cache scale, management, operations, and implementation architecture. Public documentation lives under [`docs/`](docs/index.md) and distinguishes current behavior from product direction.
+The OpenAI Codex subscription adapter is community-maintained, best-effort, and limited to the Responses semantic family. It is not a generic provider-subscription framework or SLA.
 
 ## Repository layout
 
-- `crates/owlrora-cli/` — independently versioned typed `owlrora` management CLI, bounded stdio MCP adapter, profiles, output handling, and native updater;
+- `crates/owlrora-server/` — Rust modular monolith, Management and Gateway HTTP surfaces, workers, and embedded production Console;
+- `crates/owlrora-cli/` — independently released typed management CLI, stdio MCP adapter, profiles, output handling, and native updater;
 - `crates/owlrora-key-provider/` — provider-neutral custom secret-custody SPI;
-- `crates/owlrora-server/` — Rust server/library, `owlrora-server` executable, and packaged frontend assets;
-- `apps/web/` — React and Vite frontend source;
-- `spec/` — normative target product and domain specifications;
-- `docs/` — public VitePress documentation;
-- `scripts/` — package, container, and release checks.
+- `apps/web/` — React/Vite Console source;
+- `spec/` — normative target architecture;
+- `docs/` — public VitePress documentation with release and implementation boundaries;
+- `scripts/` — package, container, fixture, contract, and release checks.
 
 ## Requirements
 
 - Rust stable
 - Node.js 24 or later
 - pnpm 11.20.0
-- Docker with Compose v2 for local PostgreSQL and Redis and for container builds
+- Docker with Compose v2
+- PostgreSQL 17 and Redis 7.4/8 for the tested non-health-only server configuration
 
-## Development
+## Local development
 
-Install locked dependencies:
+Install locked dependencies and create the ignored local environment:
 
 ```bash
 make install
-```
-
-Create the ignored local application environment, then build the embedded frontend, start healthy PostgreSQL and Redis containers, and run the server:
-
-```bash
 cp .env.example .env
 make dev
 ```
 
-The application listens on `http://127.0.0.1:8080` by default. Edit `.env` for local application overrides; optional Compose overrides live in `dev/.env`. See [`dev/README.md`](dev/README.md) for infrastructure targets.
+The application listens on <http://127.0.0.1:8080>. The checked-in example secrets are public and disposable; never reuse them outside local development.
 
-Inspect the independent management CLI, MCP adapter, and native updater:
+`make dev` builds embedded Console assets, starts healthy PostgreSQL and Redis containers, runs embedded migrations, publishes the initial runtime generation, and serves the `full` profile. Optional Compose overrides live in `dev/.env`; see [dev/README.md](dev/README.md).
+
+Inspect the source CLI and MCP adapter:
 
 ```bash
 cargo run --locked --package owlrora-cli -- --help
 cargo run --locked --package owlrora-cli -- mcp --help
-cargo run --locked --package owlrora-cli -- update --version 0.0.0-dev --dry-run --force
 ```
 
-For frontend development with Vite:
-
-```bash
-pnpm dev
-```
-
-Run the documentation site locally:
+Run the documentation site:
 
 ```bash
 make docs
@@ -132,17 +84,26 @@ make test
 make build
 make package-check
 make docs-build
-```
-
-## Container
-
-Build and smoke-test the production image:
-
-```bash
 make docker-build
 ```
 
-The image serves the management API and embedded frontend from one non-root process. It requires PostgreSQL plus explicit `OWLRORA_DATABASE_URL`, `OWLRORA_PUBLIC_ORIGIN`, `OWLRORA_SEED_ADMIN_API_KEY`, and `OWLRORA_SECRET_ROOT` configuration. Its public liveness endpoint is `GET /health`; protected operational evidence is exposed through the management surface.
+## Deployment
+
+The official image runs as a non-root UID, embeds the Console, exposes port 8080, and provides public process liveness at `GET /health`. Every current non-`health-only` profile requires PostgreSQL, Redis, and the software-custody root; stateless replicas require no durable application identity. Management-capable profiles additionally require the public origin and seed administrator key.
+
+Do not expose port 8080 directly to the public Internet. Terminate TLS at a trusted reverse proxy, pin an immutable image digest, and preserve PostgreSQL plus the external secret root as one recovery set.
+
+Start with the [deployment guide](docs/deployment/index.md), [configuration reference](docs/deployment/configuration.md), and [operations runbook](docs/deployment/operations.md).
+
+## Design and delivery status
+
+The authoritative target design lives under [`spec/`](spec/README.md). Public docs distinguish:
+
+- capability in the latest published immutable release;
+- implemented but unreleased behavior on `main`;
+- partially implemented or target-only work.
+
+The current evidence-based matrix is [docs/reference/implementation-status.md](docs/reference/implementation-status.md).
 
 ## License
 

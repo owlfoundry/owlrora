@@ -120,13 +120,6 @@ impl ServerBuilder {
             secrets = secrets.with_mac_root(Arc::new(mac_root));
         }
         let secrets = Arc::new(secrets);
-        let node_instance_id =
-            self.config
-                .node_instance_id
-                .as_deref()
-                .ok_or(StartupError::MissingConfiguration(
-                    "OWLRORA_NODE_INSTANCE_ID",
-                ))?;
         let redis_url = self
             .config
             .redis_url
@@ -144,7 +137,6 @@ impl ServerBuilder {
         let runtime = RuntimePublisher::start_with_egress_dns_overrides(
             store.clone(),
             Arc::clone(&secrets),
-            node_instance_id.to_owned(),
             self.egress_dns_overrides,
         )
         .await?;

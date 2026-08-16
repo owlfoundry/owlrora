@@ -1539,10 +1539,6 @@ mod tests {
                     "http://127.0.0.1:8080".to_owned(),
                 ),
                 ("OWLRORA_REDIS_URL".to_owned(), redis_url),
-                (
-                    "OWLRORA_NODE_INSTANCE_ID".to_owned(),
-                    format!("resources-test-{}", Uuid::now_v7()),
-                ),
                 ("OWLRORA_SEED_ADMIN_API_KEY".to_owned(), seed_key.clone()),
                 ("OWLRORA_SECRET_ROOT".to_owned(), secret_root),
             ]))
@@ -1607,13 +1603,9 @@ mod tests {
             )
             .unwrap(),
         );
-        let runtime = RuntimePublisher::start(
-            store.clone(),
-            Arc::clone(&secrets),
-            format!("narrowing-test-{}", Uuid::now_v7()),
-        )
-        .await
-        .unwrap();
+        let runtime = RuntimePublisher::start(store.clone(), Arc::clone(&secrets))
+            .await
+            .unwrap();
         let application =
             Application::new(store.clone(), Arc::clone(&runtime), config, secrets).unwrap();
         let identity = application

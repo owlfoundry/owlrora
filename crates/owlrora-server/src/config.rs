@@ -48,7 +48,6 @@ pub struct ServerConfig {
     pub seed_admin_key_version_id: Option<[u8; 32]>,
     pub secret_root: Option<Arc<SecretRoot>>,
     pub redis_url: Option<Url>,
-    pub node_instance_id: Option<String>,
     pub operator_networks: Vec<IpNet>,
     pub database_max_connections: u32,
     pub redis_pool_size: u32,
@@ -86,7 +85,6 @@ impl std::fmt::Debug for ServerConfig {
             )
             .field("secret_root", &self.secret_root)
             .field("redis_url", &self.redis_url.as_ref().map(|_| "[REDACTED]"))
-            .field("node_instance_id", &self.node_instance_id)
             .field("operator_networks", &self.operator_networks)
             .field("database_max_connections", &self.database_max_connections)
             .field("redis_pool_size", &self.redis_pool_size)
@@ -172,7 +170,6 @@ impl ServerConfig {
             "OWLRORA_SEED_ADMIN_API_KEY",
             "OWLRORA_SECRET_ROOT",
             "OWLRORA_REDIS_URL",
-            "OWLRORA_NODE_INSTANCE_ID",
             "OWLRORA_OPERATOR_NETWORKS",
             "OWLRORA_DATABASE_MAX_CONNECTIONS",
             "OWLRORA_REDIS_POOL_SIZE",
@@ -322,7 +319,6 @@ impl ServerConfig {
             seed_admin_key_version_id: None,
             secret_root: None,
             redis_url: None,
-            node_instance_id: None,
             operator_networks,
             database_max_connections,
             redis_pool_size,
@@ -352,9 +348,6 @@ impl ServerConfig {
             .map_err(|error| invalid("OWLRORA_REDIS_URL", error.to_string()))?;
         validate_redis_url(&redis_url)?;
         config.redis_url = Some(redis_url);
-        let node_instance_id = required(values, "OWLRORA_NODE_INSTANCE_ID")?;
-        validate_node_instance_id(node_instance_id)?;
-        config.node_instance_id = Some(node_instance_id.to_owned());
 
         if profile.management_enabled() {
             let public_origin = required(values, "OWLRORA_PUBLIC_ORIGIN")?
@@ -486,21 +479,6 @@ fn validate_redis_url(url: &Url) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn validate_node_instance_id(value: &str) -> Result<(), ConfigError> {
-    if value.len() > 128
-        || value.is_empty()
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
-    {
-        return Err(invalid(
-            "OWLRORA_NODE_INSTANCE_ID",
-            "must contain 1 to 128 ASCII letters, digits, '.', '-', '_', or ':'".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
 fn validate_public_origin(origin: &Url) -> Result<(), ConfigError> {
     if origin.cannot_be_a_base()
         || origin.host_str().is_none()
@@ -557,10 +535,6 @@ mod tests {
                 "OWLRORA_REDIS_URL".to_owned(),
                 "redis://127.0.0.1:6379/0".to_owned(),
             ),
-            (
-                "OWLRORA_NODE_INSTANCE_ID".to_owned(),
-                "test-node-1".to_owned(),
-            ),
         ])
     }
 
@@ -596,13 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn non_health_profiles_require_stable_node_and_redis_identity() {
-        let mut values = valid_values();
-        values.remove("OWLRORA_NODE_INSTANCE_ID");
-        assert!(matches!(
-            ServerConfig::from_values(&values),
-            Err(ConfigError::Missing("OWLRORA_NODE_INSTANCE_ID"))
-        ));
+    fn non_health_profiles_require_redis_coordination() {
         let mut values = valid_values();
         values.remove("OWLRORA_REDIS_URL");
         assert!(matches!(
@@ -618,6 +586,16 @@ mod tests {
         assert!(matches!(
             ServerConfig::from_values(&values),
             Err(ConfigError::UnknownKey(_))
+        ));
+
+        let mut values = valid_values();
+        values.insert(
+            "OWLRORA_NODE_INSTANCE_ID".to_owned(),
+            "obsolete-replica-identity".to_owned(),
+        );
+        assert!(matches!(
+            ServerConfig::from_values(&values),
+            Err(ConfigError::UnknownKey(key)) if key == "OWLRORA_NODE_INSTANCE_ID"
         ));
 
         let mut values = valid_values();

@@ -74,7 +74,6 @@ async fn paired_budget_grants_are_fenced_bounded_and_idempotently_returned() {
     let request = PairedBudgetGrantRequest {
         organization_id,
         grant_id: Uuid::now_v7(),
-        node_instance_id: "redis-integration".to_owned(),
         key: Some(BudgetGrantSide {
             policy: policy.clone(),
             amount_nanos: 100,
@@ -147,16 +146,15 @@ async fn assert_binding_specific_target_health(coordinator: &RedisCoordinator, t
         cooldown_until_unix_ms: None,
         recovery_started_at_unix_ms: None,
         observed_at_unix_ms: 1_700_000_000_000,
-        source_node_id: "probe-node-a".to_owned(),
     };
     assert!(matches!(
         coordinator
-            .put_target_health_summary(&summary, "probe-node-b", Duration::from_secs(1))
+            .put_target_health_summary(&summary, "probe-lease-b", Duration::from_secs(1))
             .await,
         Err(CoordinatorError::Conflict)
     ));
     coordinator
-        .put_target_health_summary(&summary, "probe-node-a", Duration::from_secs(1))
+        .put_target_health_summary(&summary, "probe-lease-a", Duration::from_secs(1))
         .await
         .expect("publish target health");
     let (stored_summary, remaining_ttl) = coordinator
@@ -170,13 +168,12 @@ async fn assert_binding_specific_target_health(coordinator: &RedisCoordinator, t
         binding_fingerprint: [30; 32],
         health_epoch: Uuid::now_v7(),
         category: TargetHealthCategory::Open,
-        source_node_id: "probe-node-b".to_owned(),
         ..summary.clone()
     };
     coordinator
         .put_target_health_summary(
             &newer_binding_summary,
-            "probe-node-b",
+            "probe-lease-b",
             Duration::from_secs(1),
         )
         .await
@@ -210,7 +207,7 @@ async fn target_probe_leases_are_single_owner_and_health_is_ttl_bound() {
             .try_acquire_target_probe_lease(
                 target_id,
                 &[29; 32],
-                "probe-node-a",
+                "probe-lease-a",
                 Duration::from_millis(100),
             )
             .await
@@ -221,7 +218,7 @@ async fn target_probe_leases_are_single_owner_and_health_is_ttl_bound() {
             .try_acquire_target_probe_lease(
                 target_id,
                 &[29; 32],
-                "probe-node-b",
+                "probe-lease-b",
                 Duration::from_millis(100),
             )
             .await
@@ -232,7 +229,7 @@ async fn target_probe_leases_are_single_owner_and_health_is_ttl_bound() {
             .try_acquire_target_probe_lease(
                 target_id,
                 &[30; 32],
-                "probe-node-b",
+                "probe-lease-b",
                 Duration::from_secs(1),
             )
             .await
@@ -247,7 +244,7 @@ async fn target_probe_leases_are_single_owner_and_health_is_ttl_bound() {
             .try_acquire_target_probe_lease(
                 target_id,
                 &[29; 32],
-                "probe-node-b",
+                "probe-lease-b",
                 Duration::from_millis(100),
             )
             .await
@@ -290,7 +287,6 @@ async fn coordinator_recovery_fences_old_grants_and_exposes_only_authorized_allo
     let old_request = PairedBudgetGrantRequest {
         organization_id,
         grant_id: Uuid::now_v7(),
-        node_instance_id: "recovery-test-node".to_owned(),
         requested_ttl: Duration::from_secs(10),
         one_shot: true,
         key: Some(BudgetGrantSide {
@@ -309,7 +305,6 @@ async fn coordinator_recovery_fences_old_grants_and_exposes_only_authorized_allo
     let authorized = PairedBudgetGrantRequest {
         organization_id,
         grant_id: Uuid::now_v7(),
-        node_instance_id: "recovery-test-node".to_owned(),
         requested_ttl: Duration::from_secs(10),
         one_shot: true,
         key: Some(BudgetGrantSide {

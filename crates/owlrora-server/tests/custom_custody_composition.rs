@@ -58,7 +58,6 @@ fn independent_crate_can_configure_public_server_builder_without_private_modules
         seed_admin_key_version_id: None,
         secret_root: None,
         redis_url: None,
-        node_instance_id: None,
         operator_networks: vec!["127.0.0.0/8".parse().unwrap()],
         database_max_connections: 2,
         redis_pool_size: 1,

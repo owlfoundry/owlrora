@@ -1,9 +1,17 @@
 # OwlRora Server
 
-`owlrora-server` is the server library and executable for OwlRora — Routing and Observability for Reliable AI. It packages the production React console and currently ships OwlRora's identity and management plane.
+`owlrora-server` is the Rust modular-monolith library and executable for OwlRora — Routing and Observability for Reliable AI. It packages the production React Console and owns the Management API, native-compatible Gateway ingress, runtime publication, provider transports, Redis coordination, usage aggregation, and background workers.
 
-Implemented capabilities include PostgreSQL-backed users, organizations, memberships, administrator grants, invitations, scoped Management API keys and key-derived sessions, external identity/JWT/OIDC administration, audit and idempotency evidence, secret-root encryption, and coherent runtime publication. The embedded console exposes deployment and organization workspaces over the same public Management API used by the independent `owlrora-cli` package.
+Implemented source capabilities include:
 
-The LLM gateway data plane is not implemented yet: protocol ingress, provider credentials and catalog execution, gateway keys, routing/failover, Redis allowance coordination, and usage aggregation remain planned. Custom key-provider registration and the higher-level custom server composition builder also remain future work; the official binary directly provides its bundled environment-root encryption path.
+- PostgreSQL-backed identity, tenancy, grants, audit, idempotency, catalog, policy, recovery, and usage state;
+- separate Management and Gateway key classes, sessions, external JWT/JWKS, and bounded OIDC login;
+- upstream endpoints, credentials, deployments, first-class routes/targets, egress policies, and catalog grants;
+- Anthropic Messages, OpenAI Chat/Responses HTTP/SSE, Responses WebSocket, and Gemini ingress;
+- routing, retry/failover, stickiness, health/circuits, budgets, rates, concurrency, and logical/attempt evidence;
+- bundled software custody rooted in `OWLRORA_SECRET_ROOT` plus a custom statically linked custody composition API;
+- full, management, gateway, worker, and health-only deployment profiles.
 
-The executable requires PostgreSQL plus explicit `OWLRORA_DATABASE_URL`, `OWLRORA_PUBLIC_ORIGIN`, `OWLRORA_SEED_ADMIN_API_KEY`, and `OWLRORA_SECRET_ROOT` configuration. It provides `GET /health` for public liveness and exposes protected operational readiness/publication evidence through the Management API.
+The official binary requires PostgreSQL, Redis, and `OWLRORA_SECRET_ROOT` for every non-health-only profile. Replicas are stateless and require no durable application identity. Management-capable profiles also require `OWLRORA_PUBLIC_ORIGIN` and `OWLRORA_SEED_ADMIN_API_KEY`. `GET /health` is public process liveness; management-capable profiles also expose a coarse public `GET /ready`, while detailed readiness and operations evidence remain protected Management API resources.
+
+The latest published `server-v0.0.3` predates the Phase 2 Gateway implementation present on repository `main` at and after `da26113`. Consult the repository [implementation status](../../docs/reference/implementation-status.md) and [deployment guide](../../docs/deployment/index.md) before treating source behavior as released.
