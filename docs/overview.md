@@ -7,7 +7,7 @@ OwlRora stands for **Routing and Observability for Reliable AI**.
 OwlRora is a self-hosted, multi-tenant LLM gateway. A single Rust server owns the Management API, native-compatible Gateway ingress, background workers, and embedded React console. PostgreSQL stores durable configuration and compact evidence; Redis coordinates budgets, rates, concurrency, and short-lived distributed state.
 
 ::: warning Delivery boundary
-The Phase 2 capabilities described as implemented below are present on repository `main` at and after commit `da26113`, but are newer than the latest published `server-v0.0.3` and `cli-v0.0.3` releases. The entire target specification is not yet complete. Consult [Implementation status](/reference/implementation-status) before treating a capability as released.
+The capabilities below describe reviewed repository source. Confirm that the exact server and CLI releases you select contain the required source before deployment. The entire target specification is not yet complete; consult [Implementation status](/reference/implementation-status) for the remaining boundaries.
 :::
 
 ## What is implemented on `main`

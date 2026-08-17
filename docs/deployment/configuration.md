@@ -1,7 +1,7 @@
 # Server configuration
 
-::: warning Source versus release
-This page describes repository `main`. The latest published `server-v0.0.3` does not include the Phase 2 profiles or Redis settings below; build matching current source or use a newer release once available.
+::: warning Release boundary
+This page follows repository `main`. Confirm that the selected server release contains these settings, and keep every process in one deployment on a compatible server release.
 :::
 
 `owlrora-server` reads environment variables once at startup. Empty values count as unset. Configuration is strict: **any unknown variable whose name begins with `OWLRORA_` causes startup to fail**.

@@ -1,7 +1,7 @@
 # Production operations
 
-::: warning Source versus release
-This runbook describes current repository `main`. The latest published `server-v0.0.3` predates the Phase 2 profiles and operations resources. Use matching source or a newer release once available.
+::: warning Release boundary
+This runbook follows repository `main`. Read the selected release notes and keep binaries, schema, configuration, and recovery state matched to a compatible release.
 :::
 
 It does not turn unimplemented target-spec features into guarantees.
@@ -54,7 +54,7 @@ There is no separate migration executable or migration-only URL. The runtime dat
 
 Do not run a newer binary against production and assume an older binary can always roll back after schema migration. The project does not publish a general backward-schema compatibility guarantee.
 
-The current source migration `0012_remove_node_instance_identity.sql` is a concrete compatibility boundary: it drops `node_watermarks`, which `server-v0.0.3` processes read and write. Before starting a build that contains 0012, drain and stop every `server-v0.0.3` process. After 0012 commits, do not restart v0.0.3 against that database; rollback requires restoring the pre-upgrade PostgreSQL backup and matching deployment state.
+Migration `0012_remove_node_instance_identity.sql` is a concrete compatibility boundary: it drops `node_watermarks`, which pre-0012 processes read and write. Before starting any build that contains 0012, drain and stop every pre-0012 process. After 0012 commits, do not restart a pre-0012 binary against that database; rollback requires restoring the pre-upgrade PostgreSQL backup and matching deployment state.
 
 ## Backup contract
 

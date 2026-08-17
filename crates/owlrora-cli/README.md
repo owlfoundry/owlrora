@@ -4,14 +4,14 @@
 
 The CLI provides generated typed commands for OwlRora's public Management HTTP API, local management profiles, a bounded stdio MCP adapter, structured JSON or table output, and checksum-verified native self-update. It does not link or launch the server.
 
-The latest published `cli-v0.0.3` predates the Phase 2 Gateway-management inventory present on repository `main` at and after `da26113`. Build the CLI from matching source when evaluating an unreleased server revision.
+Verify the command inventory in the selected CLI release against the server release you operate. Build both components from the same source revision when evaluating unreleased source.
 
 ```bash
 owlrora --version
 owlrora --server-url https://owlrora.example \
   --key-env OWLRORA_MANAGEMENT_API_KEY me get
 owlrora mcp --toolset read
-owlrora update --dry-run
+owlrora update --help
 ```
 
 Management commands preserve ETag preconditions, idempotency keys, tenant qualification, one-time-secret handling, and outcome-unknown recovery semantics. The MCP adapter exposes the same generated operation catalog and is read-only by default; write, secret, sensitive-result, and full-access surfaces require explicit startup gates.

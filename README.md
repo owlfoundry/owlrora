@@ -7,7 +7,7 @@
 OwlRora is a self-hosted, multi-tenant LLM gateway for routing protocol-native requests across explicit model deployments, enforcing tenant and reliability policy, and observing logical requests and physical attempts.
 
 > [!IMPORTANT]
-> The latest published `server-v0.0.3` and `cli-v0.0.3` releases contain the identity and management foundation but predate the Phase 2 Gateway plane. Repository `main` at and after commit `da26113` contains the implemented Gateway, management, CLI/MCP, and Console source described below. The complete target specification is not yet implemented; see [Implementation status](docs/reference/implementation-status.md).
+> The capability list below describes reviewed repository source, not a promise that every published artifact or target-spec requirement contains it. Verify the source and release notes for the exact server and CLI artifacts you select, and see [Implementation status](docs/reference/implementation-status.md).
 
 ## Implemented on `main`
 

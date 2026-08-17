@@ -2,8 +2,8 @@
 
 The Gateway plane accepts protocol-native LLM requests, resolves the client-facing model to a first-class route, applies distributed admission and reliability policy, and dispatches to a compatible upstream transport.
 
-::: warning Release status
-These Gateway surfaces are implemented on repository `main` at and after `da26113`, but are not included in the latest published `server-v0.0.3` image.
+::: warning Release boundary
+Confirm that the selected server release contains these Gateway surfaces, then pin its image by immutable digest. This page follows repository `main` and can be newer than a selected binary.
 :::
 
 ## Ingress endpoints

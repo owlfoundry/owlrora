@@ -3,7 +3,7 @@
 This guide evaluates the current source tree as one `full` process. It is not a production topology; use the [deployment guide](/deployment/) before exposing OwlRora to real traffic.
 
 ::: warning Source versus release
-The latest published `server-v0.0.3` and `cli-v0.0.3` releases predate the Phase 2 Gateway plane. To evaluate the capabilities documented here, build from repository `main` at or after commit `da26113`, or wait for a newer tagged release. Never assume that a documentation deployment changes an existing binary.
+This guide follows repository `main`. For a reproducible deployment, select server and CLI releases whose source contains the documented capabilities; when evaluating newer source, build both components from the same revision. Never assume that a documentation deployment changes an existing binary.
 :::
 
 ## Prerequisites

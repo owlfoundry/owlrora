@@ -3,7 +3,7 @@
 OwlRora is one stateless-at-the-edge Rust server with embedded Console assets. Durable state lives in PostgreSQL; Redis is a required coordination dependency for every non-`health-only` profile in the current implementation.
 
 ::: warning Released image boundary
-Use only immutable version tags or digests. The latest published `server-v0.0.3` image predates the Phase 2 Gateway plane. Build the current source tree to evaluate Phase 2, or wait for a newer `server-v<semver>` release. OwlRora does not publish or promote a mutable `latest` image tag.
+Use only an exact published version tag or, preferably, its immutable digest. Read the selected release notes and verify that its source contains the capabilities and migrations required by this guide. OwlRora does not publish or promote a mutable `latest` image tag.
 :::
 
 ## Tested deployment components

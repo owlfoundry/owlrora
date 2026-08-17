@@ -2,13 +2,13 @@
 
 This page separates OwlRora's normative target design from released binaries and current source implementation.
 
-**Audit baseline:** repository `main`, reviewed against all chapters under `spec/` and `spec/ui/` on 2026-08-16. The Phase 2 implementation baseline entered `main` at `da261139144b6bcb5af0624bb4693e445eeedf40`; this audit also includes the later stateless-replica cleanup documented in current source.
+**Audit baseline:** repository `main`, reviewed against all chapters under `spec/` and `spec/ui/` on 2026-08-16 and refreshed on 2026-08-17. The Phase 2 implementation baseline entered `main` at `da261139144b6bcb5af0624bb4693e445eeedf40`; this audit also includes the later stateless-replica cleanup.
 
 ## Verdict
 
 The answer to “is the complete target specification implemented?” is **no**.
 
-Phase 2 delivers a substantial end-to-end Gateway and management plane on `main`, including real PostgreSQL/Redis coordination, native protocol ingress, routing, policy enforcement, usage persistence, Console, CLI, and MCP. That does not mean every target requirement, production lifecycle, scale objective, telemetry signal, or UI workflow in `spec/` is complete.
+Phase 2 delivers a substantial end-to-end Gateway and management plane in reviewed repository source, including real PostgreSQL/Redis coordination, native protocol ingress, routing, policy enforcement, usage persistence, Console, CLI, and MCP. That does not mean every target requirement, production lifecycle, scale objective, telemetry signal, or UI workflow in `spec/` is complete.
 
 ## Delivery states
 
@@ -21,13 +21,9 @@ Phase 2 delivers a substantial end-to-end Gateway and management plane on `main`
 
 ## Release boundary
 
-| Artifact                      | Latest published release at audit time |            Gateway Phase 2 included? |
-| ----------------------------- | -------------------------------------- | -----------------------------------: |
-| `owlrora-server` / GHCR image | `server-v0.0.3`                        |                                   no |
-| `owlrora` CLI                 | `cli-v0.0.3`                           |                                   no |
-| Repository `main`             | `da26113` and later                    | implemented source, not yet released |
+Server and CLI artifacts are released independently. Consult [GitHub Releases](https://github.com/owlfoundry/owlrora/releases) for immutable tags and release notes, then verify that each selected tag resolves to source containing the required capabilities. This page deliberately does not embed a moving latest-version table.
 
-The documentation site follows `main`, so a page may describe implemented source behavior before a binary release contains it. Every such page carries an explicit source/release warning.
+The documentation site follows `main`, so pages may describe implemented source behavior newer than a selected binary release. Such pages carry an explicit source/release warning.
 
 ## Spec-by-spec assessment
 
@@ -50,7 +46,7 @@ The documentation site follows `main`, so a page may describe implemented source
 
 ## Safe claims today
 
-For repository `main`, it is accurate to say:
+For the reviewed repository source, it is accurate to say:
 
 - the primary Management and Gateway planes are implemented end to end;
 - protocol-native HTTP/SSE and Responses WebSocket paths run through real routing, policy, Redis coordination, PostgreSQL usage persistence, and provider transports;
@@ -61,7 +57,6 @@ For repository `main`, it is accurate to say:
 It is not accurate to say:
 
 - the complete target spec is finished;
-- Phase 2 is present in `server-v0.0.3` or `cli-v0.0.3`;
 - OpenTelemetry/OTLP export is available;
 - Redis is optional for a current non-health-only server process;
 - daily usage rollups/retention are active;

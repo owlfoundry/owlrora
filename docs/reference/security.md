@@ -1,7 +1,7 @@
 # Security model
 
-::: warning Source versus release
-This page describes current repository `main`. The latest published `server-v0.0.3` predates the Phase 2 Gateway, Redis-coordination, and provider-custody behavior summarized below.
+::: warning Release boundary
+This page follows repository `main`. Confirm the security behavior of the exact server release you select, and do not mix incompatible releases in one deployment.
 :::
 
 OwlRora uses explicit resource authority, separate credential classes, fail-closed runtime snapshots, bounded network egress, and authenticated secret custody. This page summarizes implemented source behavior; it is not a substitute for a deployment threat model.

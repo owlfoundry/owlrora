@@ -14,4 +14,4 @@ Implemented source capabilities include:
 
 The official binary requires PostgreSQL, Redis, and `OWLRORA_SECRET_ROOT` for every non-health-only profile. Replicas are stateless and require no durable application identity. Management-capable profiles also require `OWLRORA_PUBLIC_ORIGIN` and `OWLRORA_SEED_ADMIN_API_KEY`. `GET /health` is public process liveness; management-capable profiles also expose a coarse public `GET /ready`, while detailed readiness and operations evidence remain protected Management API resources.
 
-The latest published `server-v0.0.3` predates the Phase 2 Gateway implementation present on repository `main` at and after `da26113`. Consult the repository [implementation status](../../docs/reference/implementation-status.md) and [deployment guide](../../docs/deployment/index.md) before treating source behavior as released.
+Release availability and remaining target gaps are tracked in the repository [implementation status](../../docs/reference/implementation-status.md). Before deployment, read the selected release notes, pin the server image by immutable digest, and follow the [deployment guide](../../docs/deployment/index.md).

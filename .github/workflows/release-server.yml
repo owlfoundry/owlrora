@@ -182,7 +182,24 @@ jobs:
             --title "OwlRora Server v${VERSION}"
             --verify-tag
           )
-          if [[ "$VERSION" == *-* ]]; then
-            release_args+=(--prerelease)
+          migration_0012='crates/owlrora-server/src/adapters/postgres/migrations/0012_remove_node_instance_identity.sql'
+          if [[ -f "$migration_0012" ]]; then
+            upgrade_notes="$(cat <<'EOF'
+          ## Upgrade compatibility
+
+          This release contains migration `0012_remove_node_instance_identity.sql`, which drops the legacy `node_watermarks` table.
+
+          Before starting this release against a pre-0012 deployment:
+
+          - take and validate a PostgreSQL backup together with the matching deployment state;
+          - drain and stop every pre-0012 server process;
+          - after migration 0012 commits, do not restart a pre-0012 binary against that database;
+          - rollback requires restoring the pre-upgrade PostgreSQL backup and matching deployment state.
+          EOF
+          )"
+            release_args+=(--notes "$upgrade_notes")
+          fi
+          if [[ "$VERSION" == 0.0.* || "$VERSION" == *-* ]]; then
+            release_args+=(--prerelease --latest=false)
           fi
           gh release create "$RELEASE_TAG" "${release_args[@]}"

@@ -1,7 +1,7 @@
 # Management plane
 
-::: warning Source versus release
-This page describes repository `main`. The latest published `server-v0.0.3` and `cli-v0.0.3` do not include the Phase 2 Gateway-management inventory below.
+::: warning Release boundary
+Confirm that the selected server and CLI releases expose the same management inventory before deployment. When evaluating unreleased source, build both components from the same revision.
 :::
 
 OwlRora exposes one versioned Management API under `/api/v1`, an embedded Console, a generated typed CLI, and a local stdio MCP adapter. All four surfaces converge on the same authorization, tenancy, `ETag`, audit, idempotency, and one-time-secret semantics.

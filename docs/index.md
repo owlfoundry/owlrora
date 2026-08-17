@@ -32,13 +32,11 @@ features:
 
 ## Current delivery boundary
 
-::: warning Release status
-The latest published server release is **server-v0.0.3**. It contains the identity and management foundation, but not the Gateway plane described throughout the source-status sections of this site.
-
-The repository `main` branch at and after commit `da26113` contains the implemented Phase 2 Gateway, management, CLI/MCP, and Console work. That source state has passed repository CI and real PostgreSQL, Redis, HTTP, TLS, streaming, and WebSocket tests, but it has not yet been published under a new server or CLI release tag.
+::: warning Source and release boundary
+This site follows repository `main` and can describe capabilities newer than a selected binary. Before deployment, pin exact server and CLI releases, verify their source and release notes, and pin the server image by immutable digest. Do not interpret a release as completion of the target specification.
 :::
 
-OwlRora's normative target architecture lives under [`spec/`](https://github.com/owlfoundry/owlrora/tree/main/spec). The target specification is **not yet complete as a delivered product**. See [Implementation status](/reference/implementation-status) for the evidence-based boundary between released capability, implemented-but-unreleased source, and remaining target work.
+OwlRora's normative target architecture lives under [`spec/`](https://github.com/owlfoundry/owlrora/tree/main/spec). The target specification is **not yet complete as a delivered product**. See [Implementation status](/reference/implementation-status) for the evidence-based boundary between released capability, newer source revisions, and remaining target work.
 
 ## Start with the right path
 

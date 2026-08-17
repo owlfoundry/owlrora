@@ -2,8 +2,8 @@
 
 The independently released `owlrora` executable is a stateless Management API client. It never embeds, launches, or imports the server. Typed CLI commands and local stdio MCP tools are generated from the same server operation descriptor.
 
-::: warning Release status
-The CLI command inventory on repository `main` includes Phase 2 Gateway management. The latest published `cli-v0.0.3` predates that inventory. Build the CLI from matching source when evaluating an unreleased server source revision.
+::: warning Release boundary
+Verify that the selected CLI command inventory matches the server release you operate. Build the CLI from the same source revision when evaluating unreleased server source.
 :::
 
 ## Direct CLI use

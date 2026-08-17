@@ -63,6 +63,7 @@ OwlRora is the server foundation for a planned self-hosted AI gateway — Routin
 
 ## Releases
 
+- Mark every `0.0.x` GitHub Release as a prerelease. `0.1.0` is the earliest beta release boundary.
 - Keep committed `owlrora-cli`, `owlrora-key-provider`, and `owlrora-server` versions, plus the server's exact key-provider dependency requirement, at the reserved `0.0.0-dev` development sentinel.
 - CLI tags use `cli-v<semver>` and publish `owlrora-cli` plus five platform archives for its single `owlrora` binary and `SHA256SUMS`; they publish no server crate or container. Four Unix archives are `.tar.gz`; the Windows x86_64 archive is `.zip`. Release SemVer may include prerelease identifiers but not build metadata. The native updater selects only `cli-v*`, keeps its repository and HTTPS redirect origins fixed, verifies one exact checksum and one-file archive inventory, and performs transaction-locked cross-platform replacement of the exact running path. The checksum shares the GitHub Release trust boundary and is not an independent signature.
 - Server tags create a GitHub Release, publish `owlrora-key-provider` then `owlrora-server` at one exact version, and publish one immutable GHCR version tag. Do not publish or promote a mutable `latest` tag; reruns preserve any existing version-tag digest and release. The manual release workflow input may backfill an existing `server-v<semver>` tag from that tag's source without moving the tag.

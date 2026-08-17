@@ -143,7 +143,7 @@ jobs:
             --title "OwlRora CLI v${version}"
             --verify-tag
           )
-          if [[ "$version" == *-* ]]; then
-            release_args+=(--prerelease)
+          if [[ "$version" == 0.0.* || "$version" == *-* ]]; then
+            release_args+=(--prerelease --latest=false)
           fi
           gh release create "$GITHUB_REF_NAME" artifacts/* "${release_args[@]}"
