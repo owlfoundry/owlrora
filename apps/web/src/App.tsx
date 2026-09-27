@@ -503,7 +503,7 @@ function AppShell({
           <span aria-hidden="true">/</span>
           <span>{match.route.title}</span>
         </div>
-        <RouteContent match={match} me={me} />
+        <RouteContent key={JSON.stringify([match.route.id, match.params])} match={match} me={me} />
       </main>
     </div>
   );

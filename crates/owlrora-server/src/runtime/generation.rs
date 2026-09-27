@@ -33,8 +33,52 @@ use crate::domain::{
 
 #[derive(Clone, Debug)]
 pub struct RuntimeGeneration {
+    pub build_id: uuid::Uuid,
     pub snapshot: Arc<RuntimeSnapshot>,
     pub credential_clients: Arc<CredentialClientRegistry>,
+}
+
+impl RuntimeGeneration {
+    /// Structural availability only: transient upstream/Redis health is local to requests.
+    pub(crate) fn required_route_ready(&self, id: RouteId) -> bool {
+        let catalog = &self.snapshot.catalog;
+        let Some(route) = catalog.routes.get(&id).filter(|route| route.active) else {
+            return false;
+        };
+        let organization = route
+            .organization_id
+            .and_then(|id| self.snapshot.organizations.get(&id));
+        if route.scope == CatalogScopeKind::Organization
+            && organization.is_none_or(|organization| !organization.active)
+        {
+            return false;
+        }
+        route.targets.iter().any(|target| {
+            catalog
+                .deployments
+                .get(&target.deployment_id)
+                .is_some_and(|deployment| {
+                    deployment.operational
+                        && deployment
+                            .capabilities
+                            .is_superset(&route.required_base_capabilities)
+                        && self
+                            .credential_clients
+                            .clients
+                            .contains_key(&deployment.client_key())
+                        && organization.is_none_or(|organization| {
+                            if deployment.scope == CatalogScopeKind::Deployment {
+                                organization.deployment_grants.contains(&deployment.id)
+                            } else {
+                                deployment.organization_id == Some(organization.id)
+                                    && organization
+                                        .endpoint_grants
+                                        .contains(&deployment.endpoint_id)
+                            }
+                        })
+                })
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -49,6 +93,26 @@ pub struct RuntimeSnapshot {
     pub organizations: HashMap<OrganizationId, OrganizationSnapshot>,
     pub policy_activations: HashMap<PolicyActivationKey, PolicyActivationSnapshot>,
     pub catalog: CatalogSnapshot,
+}
+
+impl RuntimeSnapshot {
+    /// Availability is scoped to the policy being consumed, not authentication.
+    #[must_use]
+    pub fn policy_admission_ready(
+        &self,
+        kind: PolicyKind,
+        policy_id: uuid::Uuid,
+        now: DateTime<Utc>,
+    ) -> bool {
+        self.policy_activations
+            .get(&PolicyActivationKey { kind, policy_id })
+            .is_none_or(|activation| {
+                activation.state == PolicyActivationState::Active
+                    || activation
+                        .tightening_deadline
+                        .is_none_or(|deadline| now < deadline)
+            })
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -115,7 +179,6 @@ pub struct SystemRouteGrantSnapshot {
 pub struct OrganizationSnapshot {
     pub id: OrganizationId,
     pub active: bool,
-    pub pending_tightening_deadline: Option<DateTime<Utc>>,
     pub api_key_policy: serde_json::Value,
     pub system_route_grants: HashMap<RouteId, SystemRouteGrantSnapshot>,
     pub endpoint_grants: BTreeSet<EndpointId>,
@@ -249,8 +312,6 @@ pub struct RouteSnapshot {
     pub id: RouteId,
     pub scope: CatalogScopeKind,
     pub organization_id: Option<OrganizationId>,
-    pub owner_user_id: Option<UserId>,
-    pub owner_membership_id: Option<uuid::Uuid>,
     pub model_key: String,
     pub ingress_protocol_family: IngressProtocolFamily,
     pub required_base_capabilities: BTreeSet<LlmFeatureCapability>,

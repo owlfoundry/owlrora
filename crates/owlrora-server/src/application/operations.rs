@@ -554,8 +554,13 @@ impl Application {
                 }))
             }
             "telemetry" => Ok(json!({
-                "status": "not_configured",
-                "export": "standard_opentelemetry",
+                "status": if self.usage.telemetry.get().is_some() { "configured" } else { "not_configured" },
+                "pipeline": self.usage.telemetry.get().map(|telemetry| telemetry.status()),
+                "export": "otlp_http_protobuf",
+                "trace_queue_capacity": 512,
+                "trace_batch_size": 128,
+                "trace_overflow_policy": "drop_newest",
+                "metric_temporality": "cumulative",
                 "required_for_readiness": false,
             })),
             _ => Err(ApplicationError::NotFound),
@@ -1120,8 +1125,21 @@ impl Application {
         Ok(())
     }
 
+    // Preserve the public async application API while removing probe-time I/O.
+    #[allow(clippy::unused_async)]
     pub async fn public_ready(&self) -> bool {
-        self.readiness_view().await.is_ok_and(|view| view.ready)
+        // Schema compatibility was established at composition. A probe never
+        // performs dependency I/O; authority expires through the publisher fence.
+        self.lifecycle.accepting()
+            && self
+                .runtime
+                .capture_for_authority(Utc::now(), self.config.max_security_snapshot_age)
+                .is_some_and(|generation| {
+                    self.config
+                        .required_route_ids
+                        .iter()
+                        .all(|id| generation.required_route_ready(*id))
+                })
     }
 
     pub async fn list_principal_sessions(
@@ -1294,28 +1312,19 @@ impl Application {
     }
 
     async fn readiness_view(&self) -> Result<ReadinessView, ApplicationError> {
-        let database_revision = self.store.current_revision().await?;
         let status = self.runtime.status();
+        let database_revision = status.database_revision;
         let now = Utc::now();
         let runtime_age_seconds = now
             .signed_duration_since(status.confirmed_at)
             .num_seconds()
             .max(0);
-        let generation = self.runtime.capture();
-        let pending_tightening_due = generation
-            .snapshot
-            .organizations
-            .values()
-            .filter_map(|organization| organization.pending_tightening_deadline)
-            .any(|deadline| deadline <= now);
-        let ready = status.applied_revision >= database_revision
-            && runtime_age_seconds
-                <= i64::try_from(self.config.max_security_snapshot_age.as_secs())
-                    .unwrap_or(i64::MAX)
-            && !pending_tightening_due;
+        // Configuration lag and policy-local failure remain diagnostics, not
+        // reasons to eject every healthy tenant from this process.
+        let ready = self.public_ready().await;
         Ok(ReadinessView {
             ready,
-            database: "available".to_owned(),
+            database: "schema_verified".to_owned(),
             runtime_revision: status.applied_revision,
             database_revision,
             runtime_age_seconds,
@@ -1329,6 +1338,10 @@ fn usage_status_json(status: &UsageStatus) -> Value {
         "active_logical_keys":status.active_logical_keys,
         "active_attempt_keys":status.active_attempt_keys,
         "pending_batches":status.pending_batches,
+        "unconfirmed_logical_facts":status.unconfirmed_logical_facts,
+        "unconfirmed_attempt_facts":status.unconfirmed_attempt_facts,
+        "last_retention_error":status.last_retention_error,
+        "retained_rows_deleted":status.retained_rows_deleted,
         "lost_logical_facts":status.lost_logical_facts,
         "lost_attempt_facts":status.lost_attempt_facts,
         "last_flush_error":status.last_flush_error,

@@ -236,7 +236,7 @@ export function MembersPage({
         `${apiOrganizationBase(organizationId)}/memberships/actions/create`,
         {
           method: "POST",
-          idempotencyKey: idempotencyKeyFor(body),
+          idempotencyKey: await idempotencyKeyFor(body),
           body,
         },
       );

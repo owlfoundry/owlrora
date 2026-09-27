@@ -12,7 +12,7 @@ use axum::{
 use futures_util::StreamExt as _;
 use rand::Rng as _;
 use tokio::{
-    sync::OwnedSemaphorePermit,
+    sync::{OwnedSemaphorePermit, mpsc},
     time::{Instant, sleep, timeout},
 };
 
@@ -20,9 +20,9 @@ use crate::{
     adapters::{
         coordinator::StateOrigin,
         provider::wire::{
-            AwsEventStreamDecoder, ProviderUsage, SseInspector, StreamTerminalOutcome,
-            UsageCompleteness, adapt_provider_body, extract_json_usage, response_state_id,
-            upstream_url,
+            AwsEventStreamDecoder, ProviderUsage, SseInspector, StreamCommitment,
+            StreamFailureClass, StreamTerminalOutcome, UsageCompleteness, extract_json_usage,
+            response_state_id, upstream_url,
         },
     },
     domain::{AccountingOrigin, TransportKind},
@@ -35,7 +35,9 @@ use crate::{
 
 use super::{
     AdmissionContext, AttemptReservation, Candidate, GatewayPrincipal, LogicalAdmissionError,
-    LogicalRequestPermit, TargetAttemptPermit, usage::AttemptTerminalClass,
+    LogicalRequestPermit, TargetAttemptPermit,
+    lifetime::{RequestLifetime, before},
+    usage::AttemptTerminalClass,
 };
 
 pub async fn dispatch(
@@ -43,6 +45,8 @@ pub async fn dispatch(
     native: NativeRequest,
 ) -> Result<Response<Body>, ProtocolError> {
     let logical_started = Instant::now();
+    let mut lifetime =
+        RequestLifetime::new(&admission, native.intent.response_mode, logical_started)?;
     let global_permit = match admission.protection.try_acquire_global() {
         Ok(permit) => permit,
         Err(_) => {
@@ -67,18 +71,32 @@ pub async fn dispatch(
         return Err(error);
     }
     let permit = match &admission.principal {
-        GatewayPrincipal::GatewayKey { verifier, .. } => match admission
-            .admission_state
-            .admit_gateway_key(
+        GatewayPrincipal::GatewayKey { verifier, .. } => match before(
+            lifetime.precommit,
+            admission.admission_state.admit_gateway_key(
                 admission.coordinator.as_ref(),
                 &admission.generation,
                 verifier,
                 u64::try_from(native.original_body.len()).unwrap_or(u64::MAX),
-            )
-            .await
+            ),
+        )
+        .await
         {
-            Ok(permit) => permit,
-            Err(error) => {
+            Ok(Ok(permit)) => permit,
+            Err(()) => {
+                admission.usage.record_logical(
+                    &admission,
+                    "deadline_exceeded",
+                    None,
+                    None,
+                    logical_started.elapsed(),
+                );
+                return Err(gateway_error(
+                    &admission,
+                    ProtocolErrorKind::DeadlineExceeded,
+                ));
+            }
+            Ok(Err(error)) => {
                 admission.usage.record_logical(
                     &admission,
                     "admission_denied",
@@ -91,16 +109,37 @@ pub async fn dispatch(
         },
         GatewayPrincipal::LocalUser { .. } => LogicalRequestPermit::unconstrained(),
     };
-    match dispatch_admitted(&admission, &native, logical_started).await {
-        Ok(response) => Ok(hold_request_permits(response, permit, global_permit)),
+    lifetime.constrain(permit.deadline());
+    let mut logical = Some(LogicalTelemetry::new(&admission, logical_started));
+    let result = before(
+        lifetime.precommit,
+        Box::pin(dispatch_admitted(
+            &admission,
+            &native,
+            &mut logical,
+            lifetime,
+        )),
+    )
+    .await
+    .unwrap_or_else(|()| {
+        Err(gateway_error(
+            &admission,
+            ProtocolErrorKind::DeadlineExceeded,
+        ))
+    });
+    match result {
+        Ok(response) => Ok(hold_request_permits(
+            response,
+            permit,
+            global_permit,
+            lifetime.terminal,
+            Arc::clone(&admission.lifecycle),
+            admission.shutdown_stream_timeout,
+        )),
         Err(error) => {
-            admission.usage.record_logical(
-                &admission,
-                "failed",
-                None,
-                None,
-                logical_started.elapsed(),
-            );
+            if let Some(logical) = logical.as_mut() {
+                logical.finish("failed", None, None);
+            }
             Err(error)
         }
     }
@@ -109,9 +148,13 @@ pub async fn dispatch(
 async fn dispatch_admitted(
     admission: &AdmissionContext,
     native: &NativeRequest,
-    logical_started: Instant,
+    logical: &mut Option<LogicalTelemetry>,
+    lifetime: RequestLifetime,
 ) -> Result<Response<Body>, ProtocolError> {
-    let candidates = candidates_for_request(admission, native).await?;
+    let mut candidates = candidates_for_request(admission, native).await?;
+    if super::isolation::has_semantic_reference(native.family, &native.envelope) {
+        candidates.truncate(1);
+    }
     let reliability = admission
         .generation
         .snapshot
@@ -121,8 +164,7 @@ async fn dispatch_admitted(
         .filter(|policy| policy.active)
         .cloned()
         .ok_or_else(|| gateway_error(&admission, ProtocolErrorKind::RouteUnavailable))?;
-    let deadline =
-        logical_started + Duration::from_millis(reliability.deadline_policy.overall_timeout_ms);
+    let deadline = lifetime.precommit;
     let mut attempts = 0_u8;
     let mut distinct = 0_u8;
     let mut last_error = None;
@@ -183,10 +225,10 @@ async fn dispatch_admitted(
                 native,
                 candidate,
                 &reliability,
-                deadline,
+                lifetime,
                 reservation,
                 target_permit,
-                logical_started,
+                logical,
             )
             .await;
             let (condition, kind, retry_after) = match outcome {
@@ -308,14 +350,46 @@ fn hold_request_permits(
     response: Response<Body>,
     permit: LogicalRequestPermit,
     global_permit: OwnedSemaphorePermit,
+    deadline: Instant,
+    lifecycle: Arc<crate::lifecycle::Lifecycle>,
+    shutdown_grace: std::time::Duration,
 ) -> Response<Body> {
     let (parts, body) = response.into_parts();
-    let output = stream! {
+    let (sender, mut receiver) = mpsc::channel(1);
+    // This owner is polled independently of downstream demand. A stalled client
+    // cannot keep an upstream attempt or concurrency lease alive past expiry.
+    let tracker = lifecycle.response_pumps.clone();
+    tracker.spawn(async move {
         let _permit = permit;
         let _global_permit = global_permit;
         let mut body = body.into_data_stream();
-        while let Some(chunk) = body.next().await {
-            yield chunk;
+        let forward = async {
+            while let Some(chunk) = body.next().await {
+                let failed = chunk.is_err();
+                if sender.send(chunk).await.is_err() || failed {
+                    break;
+                }
+            }
+        };
+        tokio::select! {
+            biased;
+            () = lifecycle.cancelled_after(shutdown_grace) => {},
+            () = sender.closed() => {},
+            _ = before(deadline, forward) => {},
+        }
+        // Drop the upstream body before releasing the request permits.
+        drop(body);
+    });
+    let output = stream! {
+        loop {
+            match before(deadline, receiver.recv()).await {
+                Ok(Some(chunk)) => yield chunk,
+                Ok(None) => break,
+                Err(()) => {
+                    yield Err(axum::Error::new(io::Error::new(io::ErrorKind::TimedOut, "request lifetime exceeded")));
+                    break;
+                }
+            }
         }
     };
     Response::from_parts(parts, Body::from_stream(output))
@@ -398,22 +472,40 @@ enum AttemptResult {
 }
 
 pub(super) struct LogicalTelemetry {
+    span: Option<crate::telemetry::TraceSpan>,
     admission: AdmissionContext,
     started: Instant,
+    latest_usage: Option<ProviderUsage>,
+    deployment: Option<DeploymentSnapshot>,
     recorded: bool,
 }
 
 impl LogicalTelemetry {
     pub(super) fn new(admission: &AdmissionContext, started: Instant) -> Self {
+        let span = admission.usage.telemetry.get().map(|telemetry| {
+            let span = telemetry.span(
+                "logical",
+                admission.route.ingress_protocol_family.as_str(),
+                &opentelemetry::Context::new(),
+            );
+            let _ = admission.trace_parent.set(span.context());
+            span
+        });
         Self {
+            span,
             admission: admission.clone(),
             started,
+            latest_usage: None,
+            deployment: None,
             recorded: false,
         }
     }
 
-    pub(super) fn deadline_after(&self, duration: Duration) -> Instant {
-        self.started + duration
+    pub(super) fn observe(&mut self, usage: &ProviderUsage, deployment: &DeploymentSnapshot) {
+        if usage.completeness != UsageCompleteness::Absent {
+            self.latest_usage = Some(usage.clone());
+            self.deployment = Some(deployment.clone());
+        }
     }
 
     pub(super) fn finish(
@@ -423,11 +515,14 @@ impl LogicalTelemetry {
         deployment: Option<&DeploymentSnapshot>,
     ) {
         if !self.recorded {
+            if let Some(span) = &self.span {
+                span.finish(outcome_class);
+            }
             self.admission.usage.record_logical(
                 &self.admission,
                 outcome_class,
-                usage,
-                deployment,
+                usage.or(self.latest_usage.as_ref()),
+                deployment.or(self.deployment.as_ref()),
                 self.started.elapsed(),
             );
             self.recorded = true;
@@ -438,22 +533,79 @@ impl LogicalTelemetry {
 impl Drop for LogicalTelemetry {
     fn drop(&mut self) {
         if !self.recorded {
+            if let Some(span) = &self.span {
+                span.finish("stream_interrupted");
+            }
             self.admission.usage.record_logical(
                 &self.admission,
                 "stream_interrupted",
-                None,
-                None,
+                self.latest_usage.as_ref(),
+                self.deployment.as_ref(),
                 self.started.elapsed(),
             );
         }
     }
 }
 
+/// Owns response evidence and its reservation together across awaits and yields.
+/// Drop is the cancellation path, not a separate estimate-only settlement.
+pub(super) struct ResponseSettlement {
+    reservation: AttemptReservation,
+    telemetry: Option<AttemptTelemetry>,
+    usage: ProviderUsage,
+}
+
+impl ResponseSettlement {
+    pub(super) fn new(reservation: AttemptReservation, telemetry: AttemptTelemetry) -> Self {
+        Self {
+            reservation,
+            telemetry: Some(telemetry),
+            usage: ProviderUsage::absent(),
+        }
+    }
+
+    pub(super) fn observe(&mut self, usage: ProviderUsage) {
+        if usage.completeness != UsageCompleteness::Absent {
+            self.usage = usage;
+        }
+    }
+
+    pub(super) fn usage(&self) -> &ProviderUsage {
+        &self.usage
+    }
+
+    pub(super) fn finish(&mut self) {
+        if let Some(telemetry) = self.telemetry.take() {
+            let actual = settle_from_usage(
+                &mut self.reservation,
+                &telemetry.candidate.deployment,
+                self.usage.clone(),
+            );
+            telemetry.finish(
+                if actual {
+                    AttemptTerminalClass::Actual
+                } else {
+                    AttemptTerminalClass::UnknownOrAmbiguous
+                },
+                Some(&self.usage),
+            );
+        }
+    }
+}
+
+impl Drop for ResponseSettlement {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
 pub(super) struct AttemptTelemetry {
+    span: Option<crate::telemetry::TraceSpan>,
     admission: AdmissionContext,
     candidate: Candidate,
     estimated_cost_nanos: Option<u128>,
     started: Instant,
+    dispatched: bool,
     recorded: bool,
 }
 
@@ -466,10 +618,22 @@ impl AttemptTelemetry {
         Self {
             admission: admission.clone(),
             candidate: candidate.clone(),
+            span: admission.usage.telemetry.get().map(|telemetry| {
+                telemetry.span(
+                    "attempt",
+                    admission.route.ingress_protocol_family.as_str(),
+                    &admission.trace_parent.get().cloned().unwrap_or_default(),
+                )
+            }),
             estimated_cost_nanos: reservation.estimated_cost_nanos(),
             started: Instant::now(),
+            dispatched: false,
             recorded: false,
         }
+    }
+
+    pub(super) fn mark_dispatched(&mut self) {
+        self.dispatched = true;
     }
 
     pub(super) fn finish(
@@ -477,6 +641,9 @@ impl AttemptTelemetry {
         terminal_class: AttemptTerminalClass,
         usage: Option<&ProviderUsage>,
     ) {
+        if let Some(span) = &self.span {
+            span.finish(terminal_class.as_str());
+        }
         self.admission.usage.record_attempt(
             &self.admission,
             &self.candidate,
@@ -492,10 +659,21 @@ impl AttemptTelemetry {
 impl Drop for AttemptTelemetry {
     fn drop(&mut self) {
         if !self.recorded {
+            if let Some(span) = &self.span {
+                span.finish(if self.dispatched {
+                    "unknown_or_ambiguous"
+                } else {
+                    "definitely_not_dispatched"
+                });
+            }
             self.admission.usage.record_attempt(
                 &self.admission,
                 &self.candidate,
-                AttemptTerminalClass::UnknownOrAmbiguous,
+                if self.dispatched {
+                    AttemptTerminalClass::UnknownOrAmbiguous
+                } else {
+                    AttemptTerminalClass::DefinitelyNotDispatched
+                },
                 self.estimated_cost_nanos,
                 None,
                 self.started.elapsed(),
@@ -509,12 +687,13 @@ async fn execute_attempt(
     native: &NativeRequest,
     candidate: &Candidate,
     reliability: &ReliabilityPolicySnapshot,
-    overall_deadline: Instant,
+    lifetime: RequestLifetime,
     mut reservation: AttemptReservation,
     target_permit: TargetAttemptPermit,
-    logical_started: Instant,
+    logical: &mut Option<LogicalTelemetry>,
 ) -> AttemptResult {
-    let telemetry = AttemptTelemetry::new(admission, candidate, &reservation);
+    let overall_deadline = lifetime.precommit;
+    let mut telemetry = AttemptTelemetry::new(admission, candidate, &reservation);
     let Some(client) = admission
         .generation
         .credential_clients
@@ -536,12 +715,7 @@ async fn execute_attempt(
         };
     }
     let maximum_output = maximum_output_units(admission, candidate);
-    let body = match adapt_provider_body(
-        native,
-        candidate.deployment.transport_kind,
-        &candidate.deployment.upstream_model_id,
-        maximum_output,
-    ) {
+    let body = match super::isolation::prepare_body(admission, candidate, native, maximum_output) {
         Ok(body) => body,
         Err(_) => {
             reservation.definitely_not_dispatched();
@@ -613,6 +787,8 @@ async fn execute_attempt(
             .response_header_timeout_ms
             .unwrap_or(reliability.deadline_policy.response_header_timeout_ms),
     );
+    reservation.mark_dispatched();
+    telemetry.mark_dispatched();
     let response = match timeout(
         header_timeout,
         client.execute_attempt(request, connect_timeout_ms),
@@ -680,7 +856,7 @@ async fn execute_attempt(
                 reservation,
                 target_permit,
                 telemetry,
-                logical_started,
+                logical,
             )
             .await
         }
@@ -691,11 +867,11 @@ async fn execute_attempt(
                 admission,
                 candidate,
                 reliability,
-                overall_deadline,
+                lifetime,
                 reservation,
                 target_permit,
                 telemetry,
-                logical_started,
+                logical,
             )
             .await
         }
@@ -717,11 +893,12 @@ async fn non_streaming_response(
     candidate: &Candidate,
     reliability: &ReliabilityPolicySnapshot,
     overall_deadline: Instant,
-    mut reservation: AttemptReservation,
+    reservation: AttemptReservation,
     target_permit: TargetAttemptPermit,
     telemetry: AttemptTelemetry,
-    logical_started: Instant,
+    logical: &mut Option<LogicalTelemetry>,
 ) -> AttemptResult {
+    let mut settlement = ResponseSettlement::new(reservation, telemetry);
     let mut target_permit = Some(target_permit);
     let maximum = client
         .max_response_body_bytes
@@ -761,29 +938,29 @@ async fn non_streaming_response(
         }
     };
     let usage = extract_json_usage(candidate.deployment.transport_kind, &value);
+    settlement.observe(usage.clone());
+    logical
+        .as_mut()
+        .expect("logical owner before commitment")
+        .observe(&usage, &candidate.deployment);
     if let Some(state_id) = response_state_id(candidate.deployment.transport_kind, &value)
         && persist_state_origin(admission, candidate, &state_id)
             .await
             .is_err()
     {
-        settle_from_usage(&mut reservation, &candidate.deployment, usage.clone());
-        telemetry.finish(AttemptTerminalClass::Actual, Some(&usage));
+        settlement.finish();
         mark_target_success(&mut target_permit);
         return AttemptResult::Failure {
             condition: RetryCondition::ConnectFailure,
             kind: ProtocolErrorKind::StateOriginUnavailable,
         };
     }
-    settle_from_usage(&mut reservation, &candidate.deployment, usage.clone());
-    telemetry.finish(AttemptTerminalClass::Actual, Some(&usage));
+    settlement.finish();
     mark_target_success(&mut target_permit);
-    admission.usage.record_logical(
-        admission,
-        "success",
-        Some(&usage),
-        Some(&candidate.deployment),
-        logical_started.elapsed(),
-    );
+    logical
+        .as_mut()
+        .expect("logical owner before commitment")
+        .finish("success", Some(&usage), Some(&candidate.deployment));
     let mut response = Response::new(Body::from(body));
     *response.status_mut() = StatusCode::OK;
     set_downstream_headers(response.headers_mut(), admission, false);
@@ -796,12 +973,14 @@ async fn streaming_response(
     admission: &AdmissionContext,
     candidate: &Candidate,
     reliability: &ReliabilityPolicySnapshot,
-    overall_deadline: Instant,
-    mut reservation: AttemptReservation,
+    lifetime: RequestLifetime,
+    reservation: AttemptReservation,
     target_permit: TargetAttemptPermit,
     telemetry: AttemptTelemetry,
-    logical_started: Instant,
+    logical: &mut Option<LogicalTelemetry>,
 ) -> AttemptResult {
+    let mut settlement = ResponseSettlement::new(reservation, telemetry);
+    let overall_deadline = lifetime.precommit;
     let mut target_permit = Some(target_permit);
     let transport = candidate.deployment.transport_kind;
     let requires_state_origin = matches!(
@@ -825,10 +1004,8 @@ async fn streaming_response(
                     .pre_commit_classification_timeout_ms,
             ),
     );
-    let mut inspection = StreamInspection::new(transport);
+    let mut inspection = StreamInspection::new(transport, maximum);
     let mut precommit = Vec::new();
-    let mut upstream_total = 0_usize;
-    let mut precommit_events = 0_u64;
     loop {
         let wait = classification_deadline.saturating_duration_since(Instant::now());
         if wait.is_zero() {
@@ -855,17 +1032,13 @@ async fn streaming_response(
                 };
             }
         };
-        upstream_total = match upstream_total.checked_add(next.len()) {
-            Some(total) if u64::try_from(total).unwrap_or(u64::MAX) <= maximum => total,
-            _ => {
-                mark_target_failure(&mut target_permit);
-                return AttemptResult::Failure {
-                    condition: RetryCondition::ProviderOverloaded,
-                    kind: ProtocolErrorKind::UpstreamUnavailable,
-                };
-            }
-        };
-        let transformed = match inspection.push(&next) {
+        let inspected = inspection.push(&next);
+        settlement.observe(inspection.inspector.latest_usage());
+        logical
+            .as_mut()
+            .expect("logical owner before commitment")
+            .observe(settlement.usage(), &candidate.deployment);
+        let transformed = match inspected {
             Ok(value) => value,
             Err(()) => {
                 mark_target_failure(&mut target_permit);
@@ -876,11 +1049,14 @@ async fn streaming_response(
             }
         };
         if !transformed.is_empty() {
-            precommit_events = precommit_events.saturating_add(1);
             precommit.extend_from_slice(&transformed);
         }
-        if u64::try_from(precommit.len()).unwrap_or(u64::MAX) > precommit_maximum
-            || precommit_events > reliability.commitment_policy.stream_precommit_buffer_events
+        let (prefix_bytes, prefix_events) = inspection.inspector.precommit_size();
+        if prefix_bytes > precommit_maximum
+            || prefix_events > reliability.commitment_policy.stream_precommit_buffer_events
+            || (requires_state_origin
+                && inspection.inspector.state_ids().is_empty()
+                && u64::try_from(precommit.len()).unwrap_or(u64::MAX) > precommit_maximum)
         {
             mark_target_failure(&mut target_permit);
             return AttemptResult::Failure {
@@ -888,7 +1064,18 @@ async fn streaming_response(
                 kind: ProtocolErrorKind::UpstreamUnavailable,
             };
         }
-        if !precommit.is_empty()
+        if inspection.inspector.commitment() == StreamCommitment::Rejected {
+            settlement.finish();
+            let failure = inspection
+                .inspector
+                .failure_class()
+                .unwrap_or(StreamFailureClass::Unknown);
+            if failure != StreamFailureClass::InvalidRequest {
+                mark_target_failure(&mut target_permit);
+            }
+            return stream_failure_result(failure);
+        }
+        if inspection.inspector.commitment() == StreamCommitment::Ready
             && (!requires_state_origin || !inspection.inspector.state_ids().is_empty())
         {
             break;
@@ -900,9 +1087,7 @@ async fn streaming_response(
             .await
             .is_err()
         {
-            let usage = inspection.inspector.latest_usage();
-            settle_from_usage(&mut reservation, &candidate.deployment, usage.clone());
-            telemetry.finish(AttemptTerminalClass::Actual, Some(&usage));
+            settlement.finish();
             mark_target_success(&mut target_permit);
             return AttemptResult::Failure {
                 condition: RetryCondition::ConnectFailure,
@@ -915,18 +1100,27 @@ async fn streaming_response(
         .timeout_overrides
         .stream_idle_timeout_ms
         .unwrap_or(reliability.deadline_policy.stream_idle_timeout_ms);
-    let stream_seconds = effective_stream_duration_limit(admission);
-    let stream_deadline = Instant::now() + Duration::from_secs(u64::from(stream_seconds));
+    let stream_deadline = lifetime.terminal;
     let deployment = candidate.deployment.clone();
-    let logical = LogicalTelemetry::new(admission, logical_started);
+    let mut logical = logical
+        .take()
+        .expect("transfer logical owner to response stream");
+    logical.observe(settlement.usage(), &deployment);
     let output = stream! {
-        let mut reservation = reservation;
-        let telemetry = telemetry;
+        let mut settlement = settlement;
         let mut logical = logical;
         let mut completed = false;
         let mut terminal_error = None;
         yield Ok::<_, io::Error>(Bytes::from(precommit));
         loop {
+            if inspection.failed {
+                terminal_error = Some(io::Error::other("upstream stream framing is invalid"));
+                break;
+            }
+            if inspection.inspector.terminal_outcome() == StreamTerminalOutcome::ProviderFailure {
+                terminal_error = Some(io::Error::other("upstream reported a terminal provider failure"));
+                break;
+            }
             if Instant::now() >= stream_deadline {
                 terminal_error = Some(io::Error::new(
                     io::ErrorKind::TimedOut,
@@ -934,7 +1128,7 @@ async fn streaming_response(
                 ));
                 break;
             }
-            let next = timeout(Duration::from_millis(idle_ms), upstream.chunk()).await;
+            let next = before(stream_deadline.min(Instant::now() + Duration::from_millis(idle_ms)), upstream.chunk()).await;
             let chunk = match next {
                 Ok(Ok(Some(chunk))) => chunk,
                 Ok(Ok(None)) => {
@@ -965,16 +1159,10 @@ async fn streaming_response(
                     break;
                 }
             };
-            let Some(next_total) = upstream_total.checked_add(chunk.len()) else {
-                terminal_error = Some(io::Error::other("response size overflow"));
-                break;
-            };
-            upstream_total = next_total;
-            if u64::try_from(upstream_total).unwrap_or(u64::MAX) > maximum {
-                terminal_error = Some(io::Error::other("response body limit exceeded"));
-                break;
-            }
-            let transformed = match inspection.push(&chunk) {
+            let inspected = inspection.push(&chunk);
+            settlement.observe(inspection.inspector.latest_usage());
+            logical.observe(settlement.usage(), &deployment);
+            let transformed = match inspected {
                 Ok(value) => value,
                 Err(()) => {
                     terminal_error = Some(io::Error::other(
@@ -993,22 +1181,12 @@ async fn streaming_response(
                 yield Ok(Bytes::from(transformed));
             }
         }
-        let usage = inspection.inspector.latest_usage();
+        let usage = settlement.usage().clone();
+        settlement.finish();
         if completed {
-            settle_from_usage(&mut reservation, &deployment, usage.clone());
-            telemetry.finish(AttemptTerminalClass::Actual, Some(&usage));
             mark_target_success(&mut target_permit);
             logical.finish("success", Some(&usage), Some(&deployment));
         } else {
-            let settled_actual = settle_from_usage(&mut reservation, &deployment, usage.clone());
-            telemetry.finish(
-                if settled_actual {
-                    AttemptTerminalClass::Actual
-                } else {
-                    AttemptTerminalClass::UnknownOrAmbiguous
-                },
-                Some(&usage),
-            );
             mark_target_failure(&mut target_permit);
             logical.finish("stream_interrupted", Some(&usage), Some(&deployment));
         }
@@ -1022,31 +1200,71 @@ async fn streaming_response(
     AttemptResult::Response(response)
 }
 
+fn stream_failure_result(failure: StreamFailureClass) -> AttemptResult {
+    let condition = match failure {
+        StreamFailureClass::InvalidRequest => {
+            return AttemptResult::Failure {
+                condition: RetryCondition::Provider5xx,
+                kind: ProtocolErrorKind::InvalidRequest,
+            };
+        }
+        StreamFailureClass::AuthOrConfiguration | StreamFailureClass::Unknown => {
+            return failover_only();
+        }
+        StreamFailureClass::RateLimited => RetryCondition::ProviderRateLimited,
+        StreamFailureClass::Overloaded => RetryCondition::ProviderOverloaded,
+        StreamFailureClass::ProviderFailure => RetryCondition::Provider5xx,
+    };
+    AttemptResult::Failure {
+        condition,
+        kind: ProtocolErrorKind::UpstreamUnavailable,
+    }
+}
+
 struct StreamInspection {
     transport: TransportKind,
     event_stream: Option<AwsEventStreamDecoder>,
     inspector: SseInspector,
+    failed: bool,
+    remaining_bytes: u64,
 }
 
 impl StreamInspection {
-    fn new(transport: TransportKind) -> Self {
+    fn new(transport: TransportKind, maximum_bytes: u64) -> Self {
         Self {
             transport,
             event_stream: (transport == TransportKind::AnthropicMessagesBedrock)
                 .then(AwsEventStreamDecoder::default),
             inspector: SseInspector::default(),
+            failed: false,
+            remaining_bytes: maximum_bytes,
         }
     }
 
     fn push(&mut self, bytes: &[u8]) -> Result<Vec<u8>, ()> {
+        if self.failed {
+            return Err(());
+        }
+        let allowed = bytes
+            .len()
+            .min(usize::try_from(self.remaining_bytes).unwrap_or(usize::MAX));
+        let exceeded_size = allowed < bytes.len();
+        self.remaining_bytes -= allowed as u64;
+        let bytes = &bytes[..allowed];
         let output = if let Some(decoder) = &mut self.event_stream {
+            let batch = decoder.push_messages(bytes);
+            self.failed = batch.error.is_some();
             let mut output = Vec::new();
-            for payload in decoder.push(bytes).map_err(|_| ())? {
-                let value: serde_json::Value = serde_json::from_slice(&payload).map_err(|_| ())?;
-                let event = value
-                    .get("type")
+            for payload in batch.payloads {
+                let value = serde_json::from_slice::<serde_json::Value>(&payload).ok();
+                let Some(event) = value
+                    .as_ref()
+                    .and_then(|value| value.get("type"))
                     .and_then(serde_json::Value::as_str)
-                    .ok_or(())?;
+                else {
+                    self.failed = true;
+                    break;
+                };
                 output.extend_from_slice(format!("event: {event}\ndata: ").as_bytes());
                 output.extend_from_slice(&payload);
                 output.extend_from_slice(b"\n\n");
@@ -1055,10 +1273,12 @@ impl StreamInspection {
         } else {
             bytes.to_vec()
         };
-        self.inspector
-            .push(self.transport, &output)
-            .map_err(|_| ())?;
-        Ok(output)
+        let batch = self.inspector.push_frames(self.transport, &output);
+        self.failed |= exceeded_size || batch.error.is_some();
+        if self.failed && self.inspector.commitment() != StreamCommitment::Ready {
+            return Err(());
+        }
+        Ok(batch.bytes)
     }
 }
 
@@ -1142,7 +1362,7 @@ pub(super) fn settle_from_usage(
     deployment: &DeploymentSnapshot,
     usage: crate::adapters::provider::wire::ProviderUsage,
 ) -> bool {
-    if usage.completeness == UsageCompleteness::Absent {
+    if usage.completeness != UsageCompleteness::Complete {
         return false;
     }
     if let Some(PricingOutcome::Known { cost_nanos }) = usage.price(deployment) {
@@ -1382,6 +1602,183 @@ fn parse_retry_after(value: Option<&HeaderValue>, now: SystemTime) -> Option<Dur
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn unpolled_response_cancels_upstream_and_releases_permits_at_deadline() {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = Arc::clone(&semaphore).acquire_owned().await.unwrap();
+        let (dropped, receiver) = tokio::sync::oneshot::channel::<()>();
+        let upstream = stream! {
+            let _dropped = dropped;
+            loop {
+                yield Ok::<_, io::Error>(Bytes::from_static(b"data: heartbeat\n\n"));
+            }
+        };
+        let response = hold_request_permits(
+            Response::new(Body::from_stream(upstream)),
+            LogicalRequestPermit::unconstrained(),
+            permit,
+            Instant::now() + Duration::from_millis(30),
+            Arc::new(crate::lifecycle::Lifecycle::default()),
+            Duration::from_secs(30),
+        );
+        // Never poll the downstream body. The bounded channel fills, then expires.
+        assert!(
+            timeout(Duration::from_secs(2), receiver)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(semaphore.available_permits(), 1);
+        let mut body = response.into_body().into_data_stream();
+        assert!(body.next().await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn downstream_drop_cancels_pending_upstream_without_waiting_for_deadline() {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = Arc::clone(&semaphore).acquire_owned().await.unwrap();
+        let (dropped, receiver) = tokio::sync::oneshot::channel::<()>();
+        let upstream = stream! {
+            let _dropped = dropped;
+            std::future::pending::<()>().await;
+            yield Ok::<_, io::Error>(Bytes::new());
+        };
+        let response = hold_request_permits(
+            Response::new(Body::from_stream(upstream)),
+            LogicalRequestPermit::unconstrained(),
+            permit,
+            Instant::now() + Duration::from_secs(60),
+            Arc::new(crate::lifecycle::Lifecycle::default()),
+            Duration::from_secs(30),
+        );
+        drop(response);
+        assert!(
+            timeout(Duration::from_secs(2), receiver)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(semaphore.available_permits(), 1);
+    }
+
+    #[test]
+    fn stream_size_error_preserves_commitment_before_the_limit() {
+        let ready = b"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n";
+        let input = [ready.as_slice(), b"data: too-long"].concat();
+        for chunk_size in 1..=input.len() {
+            let mut inspection =
+                StreamInspection::new(TransportKind::OpenaiChatCompletions, ready.len() as u64 + 4);
+            let mut forwarded = Vec::new();
+            for chunk in input.chunks(chunk_size) {
+                forwarded.extend(inspection.push(chunk).unwrap());
+                if inspection.failed {
+                    break;
+                }
+            }
+            assert_eq!(forwarded, ready);
+            assert!(inspection.failed);
+            assert_eq!(inspection.inspector.commitment(), StreamCommitment::Ready);
+        }
+    }
+
+    #[test]
+    fn bedrock_frame_error_preserves_prior_valid_events_across_chunks() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let document: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/provider/contracts-v1.json"
+        ))
+        .unwrap();
+        let case = document["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["transport"] == "anthropic_messages_bedrock")
+            .unwrap();
+        let first = STANDARD
+            .decode(case["stream"]["chunks"][0].as_str().unwrap())
+            .unwrap();
+        let mut broken = first.clone();
+        *broken.last_mut().unwrap() ^= 1;
+        let input = [first.as_slice(), broken.as_slice()].concat();
+        for chunk_size in [1, first.len(), input.len()] {
+            let mut inspection =
+                StreamInspection::new(TransportKind::AnthropicMessagesBedrock, u64::MAX);
+            let mut forwarded = Vec::new();
+            for chunk in input.chunks(chunk_size) {
+                forwarded.extend(inspection.push(chunk).unwrap());
+                if inspection.failed {
+                    break;
+                }
+            }
+            assert!(inspection.failed);
+            assert_eq!(inspection.inspector.commitment(), StreamCommitment::Ready);
+            assert!(String::from_utf8_lossy(&forwarded).contains("message_start"));
+        }
+    }
+
+    #[test]
+    fn precommit_provider_failure_preserves_native_retry_classification() {
+        for (native, expected) in [
+            ("invalid_request_error", StreamFailureClass::InvalidRequest),
+            (
+                "authentication_error",
+                StreamFailureClass::AuthOrConfiguration,
+            ),
+            ("rate_limit_error", StreamFailureClass::RateLimited),
+            ("overloaded_error", StreamFailureClass::Overloaded),
+            ("api_error", StreamFailureClass::ProviderFailure),
+            ("future_error", StreamFailureClass::Unknown),
+        ] {
+            let mut inspection =
+                StreamInspection::new(TransportKind::AnthropicMessagesNative, 4096);
+            inspection
+                .push(
+                    format!("data: {{\"type\":\"error\",\"error\":{{\"type\":\"{native}\"}}}}\n\n")
+                        .as_bytes(),
+                )
+                .unwrap();
+            assert_eq!(
+                inspection.inspector.commitment(),
+                StreamCommitment::Rejected
+            );
+            assert_eq!(inspection.inspector.failure_class(), Some(expected));
+            let result = stream_failure_result(expected);
+            match expected {
+                StreamFailureClass::InvalidRequest => assert!(matches!(
+                    result,
+                    AttemptResult::Failure {
+                        kind: ProtocolErrorKind::InvalidRequest,
+                        ..
+                    }
+                )),
+                StreamFailureClass::AuthOrConfiguration | StreamFailureClass::Unknown => {
+                    assert!(matches!(result, AttemptResult::FailoverOnly { .. }));
+                }
+                StreamFailureClass::RateLimited => assert!(matches!(
+                    result,
+                    AttemptResult::Failure {
+                        condition: RetryCondition::ProviderRateLimited,
+                        ..
+                    }
+                )),
+                StreamFailureClass::Overloaded => assert!(matches!(
+                    result,
+                    AttemptResult::Failure {
+                        condition: RetryCondition::ProviderOverloaded,
+                        ..
+                    }
+                )),
+                StreamFailureClass::ProviderFailure => assert!(matches!(
+                    result,
+                    AttemptResult::Failure {
+                        condition: RetryCondition::Provider5xx,
+                        ..
+                    }
+                )),
+            }
+        }
+    }
 
     #[test]
     fn route_and_principal_stream_limits_use_the_narrower_value() {

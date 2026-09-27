@@ -486,12 +486,12 @@ local now = redis.call('TIME')
 local now_ms = now[1] * 1000 + math.floor(now[2] / 1000)
 redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now_ms)
 local existing = redis.call('ZSCORE', KEYS[2], ARGV[4])
-if existing then return {'acquired', tostring(math.floor(existing))} end
+if existing then return {'acquired', tostring(math.floor(existing)), tostring(now_ms)} end
 if redis.call('ZCARD', KEYS[2]) >= tonumber(config.concurrency_limit) then return {'denied'} end
 local expires = now_ms + tonumber(ARGV[5]) * 1000
 redis.call('ZADD', KEYS[2], expires, ARGV[4])
 redis.call('PEXPIRE', KEYS[2], tonumber(ARGV[5]) * 1000 + tonumber(ARGV[6]))
-return {'acquired', tostring(expires)}
+return {'acquired', tostring(expires), tostring(now_ms)}
 "#;
 
 const STATE_ORIGIN_PUT_SCRIPT: &str = r#"
@@ -1150,7 +1150,8 @@ impl RedisCoordinator {
         policy: &PolicyReference,
         lease_id: Uuid,
         lease_seconds: u32,
-    ) -> Result<u64, CoordinatorError> {
+    ) -> Result<tokio::time::Instant, CoordinatorError> {
+        let started = tokio::time::Instant::now();
         let values = self
             .invoke(
                 Script::new(STRICT_CONCURRENCY_SCRIPT)
@@ -1169,9 +1170,20 @@ impl RedisCoordinator {
             )
             .await?;
         match values.as_slice() {
-            [state, expiry] if state == "acquired" => expiry
-                .parse()
-                .map_err(|_| CoordinatorError::InvalidResponse),
+            [state, expiry, observed] if state == "acquired" => {
+                let expiry: u64 = expiry
+                    .parse()
+                    .map_err(|_| CoordinatorError::InvalidResponse)?;
+                let observed: u64 = observed
+                    .parse()
+                    .map_err(|_| CoordinatorError::InvalidResponse)?;
+                // Anchor before network I/O: latency only shortens usable authority.
+                // Subtract Redis TIME's millisecond quantization, including on replay.
+                let remaining = expiry.saturating_sub(observed).saturating_sub(1);
+                started
+                    .checked_add(Duration::from_millis(remaining))
+                    .ok_or(CoordinatorError::InvalidResponse)
+            }
             [state] if state == "denied" => Err(CoordinatorError::Denied),
             [state] if state == "conflict" => Err(CoordinatorError::Conflict),
             _ => Err(CoordinatorError::InvalidResponse),

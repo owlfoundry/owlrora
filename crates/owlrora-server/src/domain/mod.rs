@@ -16,9 +16,9 @@ pub use catalog::{
     EgressBodyPolicy, EgressConnectionPolicy, EgressDnsPolicy, EgressNetworkConfiguration,
     EgressRedirectPolicy, EgressTlsPolicy, EndpointAdapterKind, IngressProtocolFamily, PolicyKind,
     PricingRates, PricingRoundingMode, PricingRoundingPolicy, RateGrantPolicy, RouteAffinityMode,
-    RouteGrantRequestPolicyCeilings, RouteRequestPolicy, RouteSelectionPolicy,
-    SystemRouteGrantCeilings, TargetNarrowingConstraints, TargetTimeoutOverrides, TransportKind,
-    UnknownEstimateMode, compatibility,
+    RouteGrantRequestPolicyCeilings, RouteRequestPolicy, RouteSelectionPolicy, StateIsolationMode,
+    StateIsolationProfile, SystemRouteGrantCeilings, TargetNarrowingConstraints,
+    TargetTimeoutOverrides, TransportKind, UnknownEstimateMode, compatibility,
 };
 pub use external_identity::{
     BrowserClientAuthentication, BrowserLoginProfile, CapabilityClaimPolicy, ClaimMapping,

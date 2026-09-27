@@ -4,6 +4,28 @@ use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
 use super::LlmFeatureCapability;
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StateIsolationMode {
+    #[default]
+    Shared,
+    OrganizationDedicated,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StateIsolationProfile {
+    #[serde(default)]
+    pub mode: StateIsolationMode,
+}
+
+impl StateIsolationProfile {
+    #[must_use]
+    pub fn valid_for(self, scope: CatalogScopeKind) -> bool {
+        self.mode == StateIsolationMode::Shared || scope == CatalogScopeKind::Organization
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CatalogScopeKind {

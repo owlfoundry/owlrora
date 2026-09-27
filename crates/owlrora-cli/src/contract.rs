@@ -59,6 +59,7 @@ pub struct Operation {
     pub client_generated_idempotency_key: bool,
     pub secret_input: Option<SecretInput>,
     pub one_time_secret_response: bool,
+    pub one_time_result_field: Option<String>,
     pub sensitive_result: bool,
     pub high_impact: bool,
     pub destructive: bool,

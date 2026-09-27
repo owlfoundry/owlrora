@@ -1,6 +1,8 @@
 mod admission;
 mod dispatch;
 mod health;
+mod isolation;
+mod lifetime;
 mod protection;
 mod usage;
 mod websocket;
@@ -133,6 +135,9 @@ impl GatewayPrincipal {
 
 #[derive(Clone, Debug)]
 pub struct AdmissionContext {
+    pub(crate) trace_parent: Arc<std::sync::OnceLock<opentelemetry::Context>>,
+    pub(crate) lifecycle: Arc<crate::lifecycle::Lifecycle>,
+    pub(crate) shutdown_stream_timeout: std::time::Duration,
     pub generation: Arc<RuntimeGeneration>,
     pub(crate) coordinator: Option<Arc<RedisCoordinator>>,
     pub(crate) admission_state: Arc<GatewayAdmissionState>,
@@ -237,6 +242,9 @@ pub fn authenticate_and_admit(
         ));
     }
     Ok(AdmissionContext {
+        trace_parent: Arc::new(std::sync::OnceLock::new()),
+        lifecycle: Arc::clone(&application.lifecycle),
+        shutdown_stream_timeout: application.config.shutdown_stream_timeout,
         generation,
         coordinator: application.coordinator.clone(),
         admission_state: Arc::clone(&application.gateway_admission),
@@ -343,7 +351,7 @@ fn authenticate_identity(
 > {
     let generation = application
         .runtime()
-        .capture_for_admission(Utc::now(), application.config().max_security_snapshot_age)
+        .capture_for_authority(Utc::now(), application.config().max_security_snapshot_age)
         .ok_or_else(|| {
             error(
                 family,

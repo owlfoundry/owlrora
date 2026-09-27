@@ -32,6 +32,8 @@ const BUDGET_RETURN_AHEAD_MILLIS: u64 = 30_000;
 pub(crate) struct GatewayAdmissionState {
     local: Mutex<LocalAdmissionState>,
     budget_refills: AsyncMutex<HashMap<BudgetPairKey, Arc<AsyncMutex<()>>>>,
+    budget_returns: AsyncMutex<()>,
+    lease_releases: Mutex<tokio::task::JoinSet<()>>,
     shutdown: watch::Sender<bool>,
     task: AsyncMutex<Option<JoinHandle<()>>>,
 }
@@ -47,7 +49,7 @@ struct LocalAdmissionState {
     rate_grants: HashMap<PolicyReference, Vec<LocalRateGrant>>,
     concurrency_grants: HashMap<PolicyReference, Vec<LocalConcurrencyGrant>>,
     budget_grants: HashMap<BudgetPairKey, Vec<LocalBudgetGrant>>,
-    budget_debts: HashMap<BudgetPairKey, BudgetDebt>,
+    budget_debts: HashMap<BudgetLedgerKey, u128>,
 }
 
 #[derive(Debug)]
@@ -90,10 +92,41 @@ struct ReturningBudgetGrant {
     origin_remaining_nanos: u128,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-struct BudgetDebt {
-    key_nanos: u128,
-    origin_nanos: u128,
+// Policy versions and paired grants share one debt balance for the epoch.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct BudgetLedgerKey {
+    organization_id: crate::domain::OrganizationId,
+    kind: PolicyKind,
+    policy_id: Uuid,
+    epoch: String,
+}
+
+impl From<&PolicyReference> for BudgetLedgerKey {
+    fn from(policy: &PolicyReference) -> Self {
+        Self {
+            organization_id: policy.organization_id,
+            kind: policy.kind,
+            policy_id: policy.policy_id,
+            epoch: policy.epoch.clone(),
+        }
+    }
+}
+
+fn pay_budget_debt(
+    debts: &mut HashMap<BudgetLedgerKey, u128>,
+    policy: Option<&PolicyReference>,
+    remaining_nanos: &mut u128,
+) {
+    let Some(policy) = policy else { return };
+    let key = BudgetLedgerKey::from(policy);
+    if let Some(debt) = debts.get_mut(&key) {
+        let payment = (*remaining_nanos).min(*debt);
+        *remaining_nanos -= payment;
+        *debt -= payment;
+        if *debt == 0 {
+            debts.remove(&key);
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -111,6 +144,7 @@ pub(crate) struct AttemptReservation {
     key_reserved_nanos: u128,
     origin_reserved_nanos: u128,
     estimated_cost_nanos: Option<u128>,
+    dispatched: bool,
     released: bool,
 }
 
@@ -136,9 +170,11 @@ enum ConcurrencyPermit {
         grant_id: Uuid,
     },
     Strict {
+        state: Arc<GatewayAdmissionState>,
         coordinator: Arc<RedisCoordinator>,
         policy: PolicyReference,
         lease_id: Uuid,
+        deadline: tokio::time::Instant,
     },
 }
 
@@ -151,6 +187,7 @@ impl AttemptReservation {
             key_reserved_nanos: 0,
             origin_reserved_nanos: 0,
             estimated_cost_nanos: None,
+            dispatched: false,
             released: false,
         }
     }
@@ -163,12 +200,17 @@ impl AttemptReservation {
             key_reserved_nanos: 0,
             origin_reserved_nanos: 0,
             estimated_cost_nanos,
+            dispatched: false,
             released: false,
         }
     }
 
     pub(crate) const fn estimated_cost_nanos(&self) -> Option<u128> {
         self.estimated_cost_nanos
+    }
+
+    pub(crate) fn mark_dispatched(&mut self) {
+        self.dispatched = true;
     }
 
     pub(crate) fn definitely_not_dispatched(&mut self) {
@@ -211,6 +253,9 @@ impl AttemptReservation {
 
 impl Drop for AttemptReservation {
     fn drop(&mut self) {
+        if !self.dispatched {
+            self.definitely_not_dispatched();
+        }
         if self.released {
             return;
         }
@@ -223,6 +268,13 @@ impl Drop for AttemptReservation {
 }
 
 impl LogicalRequestPermit {
+    pub(crate) fn deadline(&self) -> Option<tokio::time::Instant> {
+        match &self.concurrency {
+            Some(ConcurrencyPermit::Strict { deadline, .. }) => Some(*deadline),
+            _ => None,
+        }
+    }
+
     pub(crate) const fn unconstrained() -> Self {
         Self { concurrency: None }
     }
@@ -237,12 +289,15 @@ impl Drop for LogicalRequestPermit {
                 grant_id,
             }) => state.release_approximate(&policy, grant_id),
             Some(ConcurrencyPermit::Strict {
+                state,
                 coordinator,
                 policy,
                 lease_id,
-            }) => {
-                if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-                    runtime.spawn(async move {
+                ..
+            }) if tokio::runtime::Handle::try_current().is_ok() => {
+                let mut releases = state.lease_releases.lock().expect("lease release registry");
+                while releases.try_join_next().is_some() {}
+                releases.spawn(async move {
                         if let Err(error) = coordinator
                             .release_strict_concurrency(&policy, lease_id)
                             .await
@@ -250,9 +305,8 @@ impl Drop for LogicalRequestPermit {
                             tracing::warn!(%error, %lease_id, "strict concurrency lease release failed");
                         }
                     });
-                }
             }
-            None => {}
+            Some(ConcurrencyPermit::Strict { .. }) | None => {}
         }
     }
 }
@@ -263,6 +317,8 @@ impl GatewayAdmissionState {
         Self {
             local: Mutex::new(LocalAdmissionState::default()),
             budget_refills: AsyncMutex::new(HashMap::new()),
+            budget_returns: AsyncMutex::new(()),
+            lease_releases: Mutex::new(tokio::task::JoinSet::new()),
             shutdown,
             task: AsyncMutex::new(None),
         }
@@ -280,12 +336,41 @@ impl GatewayAdmissionState {
         }));
     }
 
-    pub(crate) async fn shutdown(&self, coordinator: Option<&Arc<RedisCoordinator>>) {
-        let _ = self.shutdown.send(true);
-        if let Some(task) = self.task.lock().await.take() {
-            let _ = task.await;
+    pub(crate) async fn shutdown_bounded(
+        &self,
+        coordinator: Option<&Arc<RedisCoordinator>>,
+        grace: Duration,
+    ) {
+        self.shutdown.send_replace(true);
+        let deadline = tokio::time::Instant::now() + grace;
+        let mut releases =
+            std::mem::take(&mut *self.lease_releases.lock().expect("lease release registry"));
+        if tokio::time::timeout_at(deadline, async {
+            while releases.join_next().await.is_some() {}
+        })
+        .await
+        .is_err()
+        {
+            tracing::warn!(
+                "strict lease release deadline exceeded; remaining leases expire by TTL"
+            );
+            releases.abort_all();
+            while releases.join_next().await.is_some() {}
+        }
+        let grace = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let complete = if let Some(task) = self.task.lock().await.take() {
+            crate::lifecycle::join_bounded(task, grace).await
         } else if let Some(coordinator) = coordinator {
-            self.return_budget_grants(coordinator, None, true, 0).await;
+            tokio::time::timeout(grace, self.return_budget_grants(coordinator, None, true, 0))
+                .await
+                .is_ok()
+        } else {
+            true
+        };
+        if !complete {
+            tracing::warn!(
+                "allowance shutdown deadline exceeded; unused grants may expire without return"
+            );
         }
     }
 
@@ -327,6 +412,13 @@ impl GatewayAdmissionState {
         let Some(policy_id) = verifier.rate_policy_id else {
             return Ok(LogicalRequestPermit { concurrency: None });
         };
+        if !generation.snapshot.policy_admission_ready(
+            PolicyKind::GatewayKeyRequestLimits,
+            policy_id.as_uuid(),
+            chrono::Utc::now(),
+        ) {
+            return Err(LogicalAdmissionError::PolicyUnavailable);
+        }
         let policy = generation
             .snapshot
             .catalog
@@ -362,6 +454,14 @@ impl GatewayAdmissionState {
         native: &NativeRequest,
         maximum_output_units: u64,
     ) -> Result<AttemptReservation, LogicalAdmissionError> {
+        let now = chrono::Utc::now();
+        if !generation.snapshot.policy_admission_ready(
+            PolicyKind::GatewayKeyBudget,
+            verifier.budget_policy_id.as_uuid(),
+            now,
+        ) {
+            return Err(LogicalAdmissionError::PolicyUnavailable);
+        }
         let key_policy = generation
             .snapshot
             .catalog
@@ -413,6 +513,13 @@ impl GatewayAdmissionState {
                     .get(&candidate.deployment.origin)
             })
             .ok_or(LogicalAdmissionError::PolicyUnavailable)?;
+        if !generation.snapshot.policy_admission_ready(
+            PolicyKind::OrganizationOriginBudget,
+            origin_snapshot.id.as_uuid(),
+            now,
+        ) {
+            return Err(LogicalAdmissionError::PolicyUnavailable);
+        }
         let origin_side = enforcing_budget_side(
             verifier.organization_id,
             PolicyKind::OrganizationOriginBudget,
@@ -514,6 +621,11 @@ impl GatewayAdmissionState {
         close_all: bool,
         return_ahead_millis: u64,
     ) {
+        // Coalesce return work without blocking unrelated admission. The lock
+        // is cancellation-safe; frozen returns can be retried by the next owner.
+        let Ok(_return_owner) = self.budget_returns.try_lock() else {
+            return;
+        };
         let Ok(now) = unix_millis() else {
             return;
         };
@@ -523,16 +635,34 @@ impl GatewayAdmissionState {
                 return;
             };
             let mut returning = Vec::new();
-            for (pair, grants) in &mut local.budget_grants {
+            let LocalAdmissionState {
+                budget_grants,
+                budget_debts,
+                ..
+            } = &mut *local;
+            for (pair, grants) in budget_grants {
                 if only_pair.is_some_and(|selected| selected != pair) {
                     continue;
                 }
                 for grant in grants {
-                    if !grant.returning
-                        && grant.in_use == 0
-                        && (close_all || grant.expires_at_unix_ms <= deadline)
+                    if grant.in_use == 0
+                        && (grant.returning || close_all || grant.expires_at_unix_ms <= deadline)
                     {
-                        grant.returning = true;
+                        if !grant.returning {
+                            pay_budget_debt(
+                                budget_debts,
+                                pair.key.as_ref(),
+                                &mut grant.key_remaining_nanos,
+                            );
+                            pay_budget_debt(
+                                budget_debts,
+                                pair.origin.as_ref(),
+                                &mut grant.origin_remaining_nanos,
+                            );
+                            // Freeze the exact return permanently: Redis may
+                            // apply it even when the acknowledgement is lost.
+                            grant.returning = true;
+                        }
                         returning.push(ReturningBudgetGrant {
                             pair: pair.clone(),
                             request: grant.request.clone(),
@@ -558,11 +688,6 @@ impl GatewayAdmissionState {
             if let Some(grants) = local.budget_grants.get_mut(&grant.pair) {
                 if result.is_ok() {
                     grants.retain(|existing| existing.request.grant_id != grant.request.grant_id);
-                } else if let Some(existing) = grants
-                    .iter_mut()
-                    .find(|existing| existing.request.grant_id == grant.request.grant_id)
-                {
-                    existing.returning = false;
                 }
             }
             if let Err(error) = result {
@@ -586,14 +711,31 @@ impl GatewayAdmissionState {
             .local
             .lock()
             .map_err(|_| LogicalAdmissionError::CoordinatorUnavailable)?;
-        if local
-            .budget_debts
-            .get(pair)
-            .is_some_and(|debt| debt.key_nanos > 0 || debt.origin_nanos > 0)
+        let LocalAdmissionState {
+            budget_grants,
+            budget_debts,
+            ..
+        } = &mut *local;
+        let grants = budget_grants.entry(pair.clone()).or_default();
+        for grant in grants.iter_mut().filter(|grant| !grant.returning) {
+            pay_budget_debt(
+                budget_debts,
+                pair.key.as_ref(),
+                &mut grant.key_remaining_nanos,
+            );
+            pay_budget_debt(
+                budget_debts,
+                pair.origin.as_ref(),
+                &mut grant.origin_remaining_nanos,
+            );
+        }
+        if [&pair.key, &pair.origin]
+            .into_iter()
+            .flatten()
+            .any(|policy| budget_debts.contains_key(&BudgetLedgerKey::from(policy)))
         {
             return Ok(None);
         }
-        let grants = local.budget_grants.entry(pair.clone()).or_default();
         for grant in grants {
             if !grant.returning
                 && grant.expires_at_unix_ms > now
@@ -610,6 +752,7 @@ impl GatewayAdmissionState {
                     key_reserved_nanos: key_estimate_nanos,
                     origin_reserved_nanos: origin_estimate_nanos,
                     estimated_cost_nanos,
+                    dispatched: false,
                     released: false,
                 }));
             }
@@ -627,33 +770,34 @@ impl GatewayAdmissionState {
             .local
             .lock()
             .map_err(|_| LogicalAdmissionError::CoordinatorUnavailable)?;
-        let mut key_remaining_nanos = grant.key_amount_nanos.unwrap_or(0);
-        let mut origin_remaining_nanos = grant.origin_amount_nanos.unwrap_or(0);
-        if let Some(debt) = local.budget_debts.get_mut(pair) {
-            let key_payment = key_remaining_nanos.min(debt.key_nanos);
-            key_remaining_nanos -= key_payment;
-            debt.key_nanos -= key_payment;
-            let origin_payment = origin_remaining_nanos.min(debt.origin_nanos);
-            origin_remaining_nanos -= origin_payment;
-            debt.origin_nanos -= origin_payment;
-        }
-        local
-            .budget_debts
-            .retain(|_, debt| debt.key_nanos > 0 || debt.origin_nanos > 0);
-        let grants = local.budget_grants.entry(pair.clone()).or_default();
-        if !grants
+        let LocalAdmissionState {
+            budget_grants,
+            budget_debts,
+            ..
+        } = &mut *local;
+        let grants = budget_grants.entry(pair.clone()).or_default();
+        if grants
             .iter()
             .any(|existing| existing.request.grant_id == grant.id)
         {
-            grants.push(LocalBudgetGrant {
-                request,
-                expires_at_unix_ms: grant.expires_at_unix_ms,
-                key_remaining_nanos,
-                origin_remaining_nanos,
-                in_use: 0,
-                returning: false,
-            });
+            return Ok(());
         }
+        let mut key_remaining_nanos = grant.key_amount_nanos.unwrap_or(0);
+        let mut origin_remaining_nanos = grant.origin_amount_nanos.unwrap_or(0);
+        pay_budget_debt(budget_debts, pair.key.as_ref(), &mut key_remaining_nanos);
+        pay_budget_debt(
+            budget_debts,
+            pair.origin.as_ref(),
+            &mut origin_remaining_nanos,
+        );
+        grants.push(LocalBudgetGrant {
+            request,
+            expires_at_unix_ms: grant.expires_at_unix_ms,
+            key_remaining_nanos,
+            origin_remaining_nanos,
+            in_use: 0,
+            returning: false,
+        });
         Ok(())
     }
 
@@ -716,7 +860,7 @@ impl GatewayAdmissionState {
             settle_budget_side(
                 &mut grant.key_remaining_nanos,
                 key_reserved_nanos,
-                if key_reserved_nanos == 0 {
+                if pair.key.is_none() {
                     0
                 } else {
                     actual_cost_nanos
@@ -726,7 +870,7 @@ impl GatewayAdmissionState {
             settle_budget_side(
                 &mut grant.origin_remaining_nanos,
                 origin_reserved_nanos,
-                if origin_reserved_nanos == 0 {
+                if pair.origin.is_none() {
                     0
                 } else {
                     actual_cost_nanos
@@ -743,10 +887,17 @@ impl GatewayAdmissionState {
                 actual_cost_nanos.saturating_sub(origin_reserved_nanos)
             });
         }
-        if key_debt > 0 || origin_debt > 0 {
-            let debt = local.budget_debts.entry(pair.clone()).or_default();
-            debt.key_nanos = debt.key_nanos.saturating_add(key_debt);
-            debt.origin_nanos = debt.origin_nanos.saturating_add(origin_debt);
+        for (policy, amount) in [
+            (pair.key.as_ref(), key_debt),
+            (pair.origin.as_ref(), origin_debt),
+        ] {
+            if let Some(policy) = policy.filter(|_| amount > 0) {
+                let debt = local
+                    .budget_debts
+                    .entry(BudgetLedgerKey::from(policy))
+                    .or_default();
+                *debt = debt.saturating_add(amount);
+            }
         }
     }
 
@@ -830,14 +981,16 @@ impl GatewayAdmissionState {
                     .lease_seconds
                     .ok_or(LogicalAdmissionError::PolicyUnavailable)?;
                 let lease_id = Uuid::now_v7();
-                coordinator
+                let deadline = coordinator
                     .acquire_strict_concurrency(policy, lease_id, lease_seconds)
                     .await
                     .map_err(map_concurrency_error)?;
                 Ok(Some(ConcurrencyPermit::Strict {
+                    state: Arc::clone(self),
                     coordinator: Arc::clone(coordinator),
                     policy: policy.clone(),
                     lease_id,
+                    deadline,
                 }))
             }
             Some(_) => Err(LogicalAdmissionError::PolicyUnavailable),
@@ -1088,7 +1241,7 @@ fn map_concurrency_error(error: CoordinatorError) -> LogicalAdmissionError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::{
         adapters::coordinator::{PolicyCandidate, PolicyCoordinatorConfig},
@@ -1108,12 +1261,13 @@ mod tests {
     async fn active_budget_policy(
         coordinator: &RedisCoordinator,
         organization_id: OrganizationId,
+        kind: PolicyKind,
         limit: u128,
     ) -> PolicyReference {
         let version_id = Uuid::now_v7();
         let candidate = PolicyCandidate {
             organization_id,
-            kind: PolicyKind::GatewayKeyBudget,
+            kind,
             policy_id: Uuid::now_v7(),
             desired_epoch: Uuid::now_v7().to_string(),
             desired_version_id: version_id,
@@ -1160,6 +1314,336 @@ mod tests {
         }
     }
 
+    async fn install_test_budget_grant(
+        state: &GatewayAdmissionState,
+        coordinator: &RedisCoordinator,
+        pair: &BudgetPairKey,
+        amount_nanos: u128,
+    ) -> (PairedBudgetGrantRequest, AllowanceGrant) {
+        let request = PairedBudgetGrantRequest {
+            organization_id: pair
+                .key
+                .as_ref()
+                .or(pair.origin.as_ref())
+                .unwrap()
+                .organization_id,
+            grant_id: Uuid::now_v7(),
+            key: pair.key.clone().map(|policy| BudgetGrantSide {
+                policy,
+                amount_nanos,
+            }),
+            origin: pair.origin.clone().map(|policy| BudgetGrantSide {
+                policy,
+                amount_nanos,
+            }),
+            requested_ttl: Duration::from_secs(30),
+            one_shot: true,
+        };
+        let grant = coordinator.grant_budget_allowance(&request).await.unwrap();
+        state
+            .install_budget_grant(pair, request.clone(), grant.clone())
+            .unwrap();
+        (request, grant)
+    }
+
+    pub(in crate::gateway) async fn assert_response_settlement_charges_paired_grants(
+        admission: &crate::gateway::AdmissionContext,
+        candidate: &Candidate,
+    ) {
+        use crate::{
+            adapters::provider::wire::{ProviderUsage, UsageCompleteness},
+            gateway::dispatch::{AttemptTelemetry, ResponseSettlement},
+        };
+        let coordinator = test_coordinator().await.expect("Redis fixture is required");
+        for explicit in [false, true] {
+            for partial in [false, true] {
+                let organization_id = OrganizationId::new();
+                let pair = BudgetPairKey {
+                    key: Some(
+                        active_budget_policy(
+                            &coordinator,
+                            organization_id,
+                            PolicyKind::GatewayKeyBudget,
+                            1000,
+                        )
+                        .await,
+                    ),
+                    origin: Some(
+                        active_budget_policy(
+                            &coordinator,
+                            organization_id,
+                            PolicyKind::OrganizationOriginBudget,
+                            1000,
+                        )
+                        .await,
+                    ),
+                };
+                let state = Arc::new(GatewayAdmissionState::default());
+                install_test_budget_grant(&state, &coordinator, &pair, 100).await;
+                let mut reservation = state
+                    .try_reserve_budget(&pair, 25, 25, Some(25))
+                    .unwrap()
+                    .unwrap();
+                reservation.mark_dispatched();
+                let mut telemetry = AttemptTelemetry::new(admission, candidate, &reservation);
+                telemetry.mark_dispatched();
+                let mut settlement = ResponseSettlement::new(reservation, telemetry);
+                settlement.observe(ProviderUsage {
+                    completeness: UsageCompleteness::Complete,
+                    dimensions: [
+                        ("input_tokens".to_owned(), 3),
+                        ("output_tokens".to_owned(), 5),
+                    ]
+                    .into(),
+                });
+                if partial {
+                    settlement.observe(ProviderUsage {
+                        completeness: UsageCompleteness::Partial,
+                        dimensions: [("input_tokens".to_owned(), 4)].into(),
+                    });
+                }
+                if explicit {
+                    settlement.finish();
+                }
+                assert!(
+                    crate::gateway::lifetime::before(
+                        tokio::time::Instant::now() + Duration::from_millis(1),
+                        async move {
+                            let _settlement = settlement;
+                            std::future::pending::<()>().await;
+                        }
+                    )
+                    .await
+                    .is_err()
+                );
+                {
+                    let local = state.local.lock().unwrap();
+                    let grant = &local.budget_grants[&pair][0];
+                    let remaining = if partial { 75 } else { 87 };
+                    assert_eq!(grant.key_remaining_nanos, remaining);
+                    assert_eq!(grant.origin_remaining_nanos, remaining);
+                }
+                state
+                    .return_budget_grants(&coordinator, None, true, 0)
+                    .await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn policy_debt_follows_both_sides_across_pairs_and_grant_replays() {
+        let Some(coordinator) = test_coordinator().await else {
+            return;
+        };
+        let organization_id = OrganizationId::new();
+        let key_a = active_budget_policy(
+            &coordinator,
+            organization_id,
+            PolicyKind::GatewayKeyBudget,
+            1000,
+        )
+        .await;
+        let key_b = active_budget_policy(
+            &coordinator,
+            organization_id,
+            PolicyKind::GatewayKeyBudget,
+            1000,
+        )
+        .await;
+        let origin_a = active_budget_policy(
+            &coordinator,
+            organization_id,
+            PolicyKind::OrganizationOriginBudget,
+            1000,
+        )
+        .await;
+        let origin_b = active_budget_policy(
+            &coordinator,
+            organization_id,
+            PolicyKind::OrganizationOriginBudget,
+            1000,
+        )
+        .await;
+        let pair = BudgetPairKey {
+            key: Some(key_a.clone()),
+            origin: Some(origin_a.clone()),
+        };
+        let other_origin = BudgetPairKey {
+            key: Some(key_a.clone()),
+            origin: Some(origin_b),
+        };
+        let other_key = BudgetPairKey {
+            key: Some(key_b),
+            origin: Some(origin_a.clone()),
+        };
+        let state = Arc::new(GatewayAdmissionState::default());
+        let (request, grant) = install_test_budget_grant(&state, &coordinator, &pair, 100).await;
+        install_test_budget_grant(&state, &coordinator, &other_origin, 40).await;
+        install_test_budget_grant(&state, &coordinator, &other_key, 40).await;
+        // An enforcing zero estimate must still settle actual consumption.
+        state
+            .try_reserve_budget(&pair, 0, 0, Some(0))
+            .unwrap()
+            .unwrap()
+            .settle_actual_cost(150);
+        assert_eq!(
+            state.local.lock().unwrap().budget_debts[&BudgetLedgerKey::from(&key_a)],
+            50
+        );
+        // Replayed allocation cannot pay the new debt with already-spent funds.
+        state.install_budget_grant(&pair, request, grant).unwrap();
+        assert_eq!(
+            state.local.lock().unwrap().budget_debts[&BudgetLedgerKey::from(&key_a)],
+            50
+        );
+        assert!(
+            state
+                .try_reserve_budget(&other_origin, 1, 1, Some(1))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            state
+                .try_reserve_budget(&other_key, 1, 1, Some(1))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            state.local.lock().unwrap().budget_debts[&BudgetLedgerKey::from(&key_a)],
+            10
+        );
+        assert_eq!(
+            state.local.lock().unwrap().budget_debts[&BudgetLedgerKey::from(&origin_a)],
+            10
+        );
+        install_test_budget_grant(&state, &coordinator, &other_origin, 20).await;
+        install_test_budget_grant(&state, &coordinator, &other_key, 20).await;
+        assert!(state.local.lock().unwrap().budget_debts.is_empty());
+        for pair in [&other_origin, &other_key] {
+            let mut reservation = state
+                .try_reserve_budget(pair, 10, 10, Some(10))
+                .unwrap()
+                .unwrap();
+            reservation.definitely_not_dispatched();
+        }
+        // Refunds pay sibling policy debt before returning unused allowance.
+        state
+            .try_reserve_budget(&pair, 0, 0, Some(0))
+            .unwrap()
+            .unwrap()
+            .settle_actual_cost(5);
+        state
+            .return_budget_grants(&coordinator, None, true, 0)
+            .await;
+        assert!(state.local.lock().unwrap().budget_debts.is_empty());
+        assert!(state.local.lock().unwrap().budget_grants.is_empty());
+    }
+
+    #[tokio::test]
+    async fn uncertain_budget_return_never_reopens_funds_for_new_debt() {
+        let Some(coordinator) = test_coordinator().await else {
+            return;
+        };
+        let organization_id = OrganizationId::new();
+        let policy = active_budget_policy(
+            &coordinator,
+            organization_id,
+            PolicyKind::GatewayKeyBudget,
+            500,
+        )
+        .await;
+        let pair = BudgetPairKey {
+            key: Some(policy.clone()),
+            origin: None,
+        };
+        let state = Arc::new(GatewayAdmissionState::default());
+        let (return_request, _) = install_test_budget_grant(&state, &coordinator, &pair, 100).await;
+        install_test_budget_grant(&state, &coordinator, &pair, 100).await;
+        // Model a successful coordinator return whose acknowledgement is lost:
+        // the local frozen return remains, with no confirmed removal.
+        state
+            .local
+            .lock()
+            .unwrap()
+            .budget_grants
+            .get_mut(&pair)
+            .unwrap()[0]
+            .returning = true;
+        coordinator
+            .return_budget_allowance(&return_request, 100, 0)
+            .await
+            .unwrap();
+        state
+            .try_reserve_budget(&pair, 100, 0, Some(100))
+            .unwrap()
+            .unwrap()
+            .settle_actual_cost(150);
+        assert!(
+            state
+                .try_reserve_budget(&pair, 1, 0, Some(1))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            state.local.lock().unwrap().budget_debts[&BudgetLedgerKey::from(&policy)],
+            50
+        );
+        state
+            .return_budget_grants(&coordinator, None, true, 0)
+            .await;
+        assert!(state.local.lock().unwrap().budget_grants.is_empty());
+        assert_eq!(
+            state.local.lock().unwrap().budget_debts[&BudgetLedgerKey::from(&policy)],
+            50
+        );
+        install_test_budget_grant(&state, &coordinator, &pair, 100).await;
+        assert!(state.local.lock().unwrap().budget_debts.is_empty());
+        assert!(
+            state
+                .try_reserve_budget(&pair, 51, 0, Some(51))
+                .unwrap()
+                .is_none()
+        );
+        state
+            .try_reserve_budget(&pair, 50, 0, Some(50))
+            .unwrap()
+            .unwrap()
+            .definitely_not_dispatched();
+        state
+            .return_budget_grants(&coordinator, None, true, 0)
+            .await;
+    }
+
+    #[test]
+    fn debt_identity_ignores_same_epoch_versions_but_not_policy_or_epoch() {
+        let policy = PolicyReference {
+            organization_id: OrganizationId::new(),
+            kind: PolicyKind::GatewayKeyBudget,
+            policy_id: Uuid::now_v7(),
+            version_id: Uuid::now_v7(),
+            epoch: "current".to_owned(),
+            generation: 1,
+            recovery_generation: 0,
+        };
+        let key = BudgetLedgerKey::from(&policy);
+        let mut updated = policy.clone();
+        updated.version_id = Uuid::now_v7();
+        updated.generation += 1;
+        updated.recovery_generation += 1;
+        assert_eq!(key, BudgetLedgerKey::from(&updated));
+        updated.epoch = "next".to_owned();
+        assert_ne!(key, BudgetLedgerKey::from(&updated));
+        updated = policy.clone();
+        updated.policy_id = Uuid::now_v7();
+        assert_ne!(key, BudgetLedgerKey::from(&updated));
+        updated = policy.clone();
+        updated.organization_id = OrganizationId::new();
+        assert_ne!(key, BudgetLedgerKey::from(&updated));
+        updated = policy;
+        updated.kind = PolicyKind::OrganizationOriginBudget;
+        assert_ne!(key, BudgetLedgerKey::from(&updated));
+    }
+
     #[tokio::test]
     async fn exact_pair_refills_share_one_singleflight_lock() {
         let state = GatewayAdmissionState::default();
@@ -1177,12 +1661,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pre_dispatch_deadline_cancellation_refunds_both_budget_reservations() {
+        let Some(coordinator) = test_coordinator().await else {
+            return;
+        };
+        let organization_id = OrganizationId::new();
+        let key = active_budget_policy(
+            &coordinator,
+            organization_id,
+            PolicyKind::GatewayKeyBudget,
+            100,
+        )
+        .await;
+        let origin = active_budget_policy(
+            &coordinator,
+            organization_id,
+            PolicyKind::OrganizationOriginBudget,
+            100,
+        )
+        .await;
+        let pair = BudgetPairKey {
+            key: Some(key),
+            origin: Some(origin),
+        };
+        let state = Arc::new(GatewayAdmissionState::default());
+        install_test_budget_grant(&state, &coordinator, &pair, 100).await;
+        let reservation = state
+            .try_reserve_budget(&pair, 25, 40, Some(40))
+            .unwrap()
+            .unwrap();
+        let result = super::super::lifetime::before(
+            tokio::time::Instant::now() + Duration::from_millis(10),
+            async move {
+                // A pending pre-send operation (for example dynamic credential
+                // authentication) is cancelled by the outer request deadline.
+                let _reservation = reservation;
+                std::future::pending::<()>().await;
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        let local = state.local.lock().unwrap();
+        let grant = &local.budget_grants[&pair][0];
+        assert_eq!(grant.key_remaining_nanos, 100);
+        assert_eq!(grant.origin_remaining_nanos, 100);
+        assert_eq!(grant.in_use, 0);
+    }
+
+    #[tokio::test]
     async fn budget_returns_wait_for_in_flight_reservations_and_preserve_ambiguous_spend() {
         let Some(coordinator) = test_coordinator().await else {
             return;
         };
         let organization_id = OrganizationId::new();
-        let policy = active_budget_policy(&coordinator, organization_id, 100).await;
+        let policy = active_budget_policy(
+            &coordinator,
+            organization_id,
+            PolicyKind::GatewayKeyBudget,
+            100,
+        )
+        .await;
         let pair = BudgetPairKey {
             key: Some(policy.clone()),
             origin: None,
@@ -1191,7 +1729,7 @@ mod tests {
         let request = grant_request(organization_id, policy.clone(), 100);
         let grant = coordinator.grant_budget_allowance(&request).await.unwrap();
         state.install_budget_grant(&pair, request, grant).unwrap();
-        let reservation = state
+        let mut reservation = state
             .try_reserve_budget(&pair, 25, 0, Some(25))
             .unwrap()
             .unwrap();
@@ -1205,6 +1743,7 @@ mod tests {
             Err(CoordinatorError::Denied)
         ));
 
+        reservation.mark_dispatched();
         drop(reservation);
         state
             .return_budget_grants(&coordinator, None, true, 0)

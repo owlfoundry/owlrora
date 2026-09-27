@@ -174,7 +174,7 @@ export function IdentityIssuerCreatePage() {
     try {
       const response = await apiRequest<ExternalIdentityIssuer>(
         "/api/v1/system/identity-issuers/actions/create",
-        { method: "POST", idempotencyKey: idempotencyKeyFor(body), body },
+        { method: "POST", idempotencyKey: await idempotencyKeyFor(body), body },
       );
       discardChanges();
       navigate(`/admin/identity/issuers/${encodeURIComponent(response.value.id)}`, true);
@@ -618,7 +618,7 @@ export function IdentityBindingCreatePage() {
         "/api/v1/system/identity-bindings/actions/create",
         {
           method: "POST",
-          idempotencyKey: idempotencyKeyFor(body),
+          idempotencyKey: await idempotencyKeyFor(body),
           body,
         },
       );
@@ -862,7 +862,7 @@ export function ProvisioningPolicyCreatePage() {
     try {
       const response = await apiRequest<ProvisioningPolicy>(
         "/api/v1/system/provisioning-policies/actions/create",
-        { method: "POST", idempotencyKey: idempotencyKeyFor(body), body },
+        { method: "POST", idempotencyKey: await idempotencyKeyFor(body), body },
       );
       discardChanges();
       navigate(

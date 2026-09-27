@@ -91,6 +91,9 @@ const PROMPT: &str = "Return the string fixture-ok.";
 const INTERRUPTED_STREAM_PROMPT: &str = "Return usage, then end without a terminal marker.";
 const STREAM_LIMIT_PROMPT: &str = "stream-limit-fixture";
 const SLOW_PHASE_PROMPT: &str = "slow-phase-fixture";
+const EARLY_SSE_ERROR_PROMPT: &str = "early-sse-error-fixture";
+const LATE_SSE_ERROR_PROMPT: &str = "late-sse-error-fixture";
+const SSE_LIFETIME_PROMPT: &str = "sse-lifetime-fixture";
 
 type ReplayBody = UnsyncBoxBody<Bytes, Infallible>;
 
@@ -482,6 +485,43 @@ async fn handle_replay_request(
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     if streaming {
+        let prompt = json
+            .as_ref()
+            .and_then(|value| value["messages"][0]["content"].as_str());
+        if prompt == Some(SSE_LIFETIME_PROMPT) {
+            let stream = async_stream::stream! {
+                tokio::time::sleep(Duration::from_millis(600)).await;
+                yield Ok::<_, Infallible>(Frame::data(Bytes::from_static(
+                    b"data: {\"choices\":[{\"delta\":{\"content\":\"ready\"}}]}\n\n",
+                )));
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                yield Ok(Frame::data(Bytes::from_static(b"data: [DONE]\n\n")));
+            };
+            return Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/event-stream")
+                .body(StreamBody::new(stream).boxed_unsync())
+                .unwrap());
+        }
+        if matches!(prompt, Some(EARLY_SSE_ERROR_PROMPT | LATE_SSE_ERROR_PROMPT)) {
+            let first = if prompt == Some(EARLY_SSE_ERROR_PROMPT) {
+                ": keepalive\r\n\r\ndata: "
+            } else {
+                "data: {\"choices\":[{\"delta\":{\"content\":\"valid-prefix\"}}]}\n\ndata: "
+            };
+            let chunks = [first, "{\"error\":{\"type\":\"overloaded_error\"}}\n\n"];
+            let stream = async_stream::stream! {
+                for chunk in chunks {
+                    yield Ok::<_, Infallible>(Frame::data(Bytes::from_static(chunk.as_bytes())));
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            };
+            return Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/event-stream")
+                .body(StreamBody::new(stream).boxed_unsync())
+                .unwrap());
+        }
         let interrupted_after_usage = transport == "openai_chat_completions"
             && json.as_ref().is_some_and(|value| {
                 value["messages"][0]["content"].as_str() == Some(INTERRUPTED_STREAM_PROMPT)
@@ -2015,7 +2055,12 @@ async fn recorded_transports_run_through_postgres_redis_and_gateway_network_e2e(
         budget_ledger_snapshot(&coordinator, &fixture.budget_candidates).await;
     let probe_usage_baseline = usage_totals(&store, fixture.key_id).await;
     let seed_admin_key = generate_management_key().expose_once();
-    let config = server_config(database_url.clone(), redis_url.clone(), &seed_admin_key);
+    let collector = crate::telemetry::tests::Collector::default();
+    let (collector_endpoint, collector_task) =
+        crate::telemetry::tests::collector_server(collector.clone()).await;
+    let mut config = server_config(database_url.clone(), redis_url.clone(), &seed_admin_key);
+    Arc::make_mut(&mut config).otlp_endpoint = Some(collector_endpoint.parse().unwrap());
+    Arc::make_mut(&mut config).trace_sample_ratio = 1.0;
     let built = ServerBuilder::new(config)
         .with_test_egress_dns_override("chatgpt.com", replay.address)
         .with_test_egress_dns_override("oauth.owlrora.test", replay.address)
@@ -2026,6 +2071,7 @@ async fn recorded_transports_run_through_postgres_redis_and_gateway_network_e2e(
     let application = built.application().unwrap();
     let management_identity = application
         .authenticate_management_key(&seed_admin_key, "gateway-e2e-management".to_owned())
+        .await
         .unwrap();
     let organization_id = OrganizationId::from_uuid(fixture.organization_id);
     let (original_grants, original_grants_etag) = application
@@ -2890,6 +2936,104 @@ async fn recorded_transports_run_through_postgres_redis_and_gateway_network_e2e(
         "fixture-ok"
     );
 
+    // Real TLS/HTTP chunks: neither comments nor a partial data line commit a
+    // success; a complete valid event does, and a later failure never retries.
+    let semantic_route = fixture.route("azure_openai_chat_completions");
+    let mut lifetime_body = ingress_body(semantic_route, true);
+    lifetime_body["messages"][0]["content"] = json!(SSE_LIFETIME_PROMPT);
+    let lifetime_started = tokio::time::Instant::now();
+    let mut limited = client
+        .post(ingress_url(gateway_address, semantic_route, true))
+        .bearer_auth(&fixture.key_wire)
+        .json(&lifetime_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(limited.status(), StatusCode::OK);
+    assert!(limited.chunk().await.unwrap().is_some());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1_000), limited.bytes())
+            .await
+            .expect("SSE idle wait must not outlive the original one-second key limit")
+            .is_err()
+    );
+    assert!(lifetime_started.elapsed() < Duration::from_millis(1_600));
+    assert_eq!(
+        replay
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| {
+                request
+                    .json
+                    .as_ref()
+                    .is_some_and(|value| value["messages"][0]["content"] == SSE_LIFETIME_PROMPT)
+            })
+            .count(),
+        1,
+        "expired committed streams must never retry"
+    );
+    let mut semantic_body = ingress_body(semantic_route, true);
+    semantic_body["messages"][0]["content"] = json!(LATE_SSE_ERROR_PROMPT);
+    let mut late_error = client
+        .post(ingress_url(gateway_address, semantic_route, true))
+        .bearer_auth(&fixture.key_wire)
+        .json(&semantic_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(late_error.status(), StatusCode::OK);
+    let prefix = late_error.chunk().await.unwrap().unwrap();
+    assert!(String::from_utf8_lossy(&prefix).contains("valid-prefix"));
+    assert!(late_error.bytes().await.is_err());
+    assert_eq!(
+        replay
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| {
+                request
+                    .json
+                    .as_ref()
+                    .is_some_and(|value| value["messages"][0]["content"] == LATE_SSE_ERROR_PROMPT)
+            })
+            .count(),
+        1
+    );
+
+    semantic_body["messages"][0]["content"] = json!(EARLY_SSE_ERROR_PROMPT);
+    let early_error = client
+        .post(ingress_url(gateway_address, semantic_route, true))
+        .bearer_auth(&fixture.key_wire)
+        .json(&semantic_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(early_error.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(replay.requests.lock().unwrap().iter().any(|request| {
+        request
+            .json
+            .as_ref()
+            .is_some_and(|value| value["messages"][0]["content"] == EARLY_SSE_ERROR_PROMPT)
+    }));
+
+    let semantic_attempts = replay
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| {
+            request.json.as_ref().is_some_and(|value| {
+                matches!(
+                    value["messages"][0]["content"].as_str(),
+                    Some(EARLY_SSE_ERROR_PROMPT | LATE_SSE_ERROR_PROMPT)
+                )
+            })
+        })
+        .count() as u64;
+
     let organization_id = OrganizationId::from_uuid(fixture.organization_id);
     let gateway_key_id = GatewayKeyId::from_uuid(fixture.key_id);
     let (_, initial_etag) = application
@@ -3022,8 +3166,79 @@ async fn recorded_transports_run_through_postgres_redis_and_gateway_network_e2e(
         );
     }
 
+    let mut request = format!("ws://{gateway_address}/v1/responses")
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().insert(
+        "authorization",
+        http::HeaderValue::from_str(&format!("Bearer {}", fixture.key_wire)).unwrap(),
+    );
+    // The fixture secret was retired by the two rotations above. Authenticate
+    // the idle connection with the current secret before testing drain admission.
+    request.headers_mut().insert(
+        "authorization",
+        http::HeaderValue::from_str(&format!("Bearer {}", second_rotation.key)).unwrap(),
+    );
+    let (mut draining_websocket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
     let _ = shutdown_sender.send(());
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while application.lifecycle.accepting() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    draining_websocket
+        .send(Message::Text(
+            json!({
+                "type":"response.create", "model":websocket_route.route_key,
+                "input":PROMPT, "max_output_tokens":32
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let closed = tokio::time::timeout(Duration::from_secs(1), draining_websocket.next())
+        .await
+        .unwrap();
+    assert!(matches!(closed, Some(Ok(Message::Close(_))) | None));
     gateway.await.unwrap();
+    assert!(application.lifecycle.upgrades.is_empty());
+    assert!(application.lifecycle.response_pumps.is_empty());
+    let telemetry_status =
+        serde_json::to_value(application.usage.telemetry.get().unwrap().status()).unwrap();
+    assert_eq!(telemetry_status["outstanding_spans"], 0);
+    assert_eq!(telemetry_status["queue_dropped_spans"], 0);
+    assert_eq!(telemetry_status["export_failed_spans"], 0);
+    assert_eq!(telemetry_status["shutdown_failures"], 0);
+    assert!(telemetry_status["exported_spans"].as_u64().unwrap() > 0);
+    let telemetry_requests = collector.requests.lock().unwrap().clone();
+    assert!(
+        telemetry_requests
+            .iter()
+            .any(|(path, _)| path == "/v1/traces")
+    );
+    assert!(
+        telemetry_requests
+            .iter()
+            .any(|(path, _)| path == "/v1/metrics")
+    );
+    for (_, payload) in &telemetry_requests {
+        for forbidden in [
+            fixture.key_wire.as_bytes(),
+            PROMPT.as_bytes(),
+            fixture.organization_id.to_string().as_bytes(),
+        ] {
+            assert!(
+                !payload
+                    .windows(forbidden.len())
+                    .any(|window| window == forbidden)
+            );
+        }
+    }
+    collector_task.abort();
+    let _ = collector_task.await;
 
     let current_day = chrono::Utc::now()
         .date_naive()
@@ -3062,9 +3277,33 @@ async fn recorded_transports_run_through_postgres_redis_and_gateway_network_e2e(
         .iter()
         .map(|bucket| bucket.attempt_count.parse::<u64>().unwrap())
         .sum::<u64>();
-    assert_eq!(queried_logical_count, 26);
-    assert_eq!(queried_attempt_count, 32);
+    assert_eq!(queried_logical_count, 29);
+    assert_eq!(queried_attempt_count, 33 + semantic_attempts);
     assert!(!usage.completeness.includes_unflushed_process_facts);
+    let mut daily_query = usage_query.clone();
+    daily_query.granularity = UsageGranularity::Day;
+    let daily = application
+        .get_system_usage(&management_identity, &daily_query)
+        .await
+        .unwrap();
+    assert_eq!(
+        daily
+            .logical_requests
+            .items
+            .iter()
+            .map(|bucket| bucket.request_count.parse::<u64>().unwrap())
+            .sum::<u64>(),
+        queried_logical_count
+    );
+    assert_eq!(
+        daily
+            .attempts
+            .items
+            .iter()
+            .map(|bucket| bucket.attempt_count.parse::<u64>().unwrap())
+            .sum::<u64>(),
+        queried_attempt_count
+    );
     let origin_breakdown = application
         .get_system_usage_breakdown(
             &management_identity,
@@ -3083,7 +3322,10 @@ async fn recorded_transports_run_through_postgres_redis_and_gateway_network_e2e(
         origin_breakdown.items[0].dimension_value.as_deref(),
         Some("system_provided")
     );
-    assert_eq!(origin_breakdown.items[0].measures.count, "32");
+    assert_eq!(
+        origin_breakdown.items[0].measures.count,
+        (33 + semantic_attempts).to_string()
+    );
 
     let logical_request_count = sqlx::query_scalar::<_, i64>(
         "SELECT COALESCE(sum(request_count),0)::bigint
@@ -3101,8 +3343,11 @@ async fn recorded_transports_run_through_postgres_redis_and_gateway_network_e2e(
     .fetch_one(store.pool())
     .await
     .unwrap();
-    assert_eq!(logical_request_count, 26);
-    assert_eq!(attempt_count, 32);
+    assert_eq!(logical_request_count, 29);
+    assert_eq!(
+        attempt_count,
+        33 + i64::try_from(semantic_attempts).unwrap()
+    );
     let stalled_connect_attempts = sqlx::query_scalar::<_, i64>(
         "SELECT COALESCE(sum(attempt_count),0)::bigint
          FROM attempt_usage_hourly
@@ -3130,6 +3375,13 @@ async fn recorded_transports_run_through_postgres_redis_and_gateway_network_e2e(
     .await
     .unwrap();
     assert_eq!(failed_websocket_attempts, 2);
+
+    Box::pin(assert_response_settlement_and_isolation(
+        &application,
+        &store,
+        &interrupted_admission,
+    ))
+    .await;
 
     let (created_key, created_key_etag) = application
         .create_gateway_api_key(
@@ -3291,4 +3543,155 @@ async fn recorded_transports_run_through_postgres_redis_and_gateway_network_e2e(
     stalled_tls.shutdown().await;
     replay.shutdown().await;
     fs::remove_dir_all(fixture.temp_dir).unwrap();
+}
+
+async fn assert_response_settlement_and_isolation(
+    application: &crate::application::Application,
+    store: &PgStore,
+    admission: &super::AdmissionContext,
+) {
+    use super::dispatch::{AttemptTelemetry, LogicalTelemetry, ResponseSettlement};
+    use crate::{
+        adapters::provider::wire::{ProviderUsage, UsageCompleteness},
+        domain::{
+            PricingPolicyId, PricingPolicyVersionId, PricingRates, PricingRoundingMode,
+            PricingRoundingPolicy,
+        },
+        runtime::PricingPolicyVersionSnapshot,
+    };
+    let mut candidate = admission.candidates[0].clone();
+    candidate.deployment.pricing = Some(Arc::new(PricingPolicyVersionSnapshot {
+        id: PricingPolicyVersionId::new(),
+        pricing_policy_id: PricingPolicyId::new(),
+        generation: 1,
+        rates: PricingRates {
+            currency: "USD".to_owned(),
+            cost_nanos_per_unit: [
+                ("input_tokens".to_owned(), 1),
+                ("output_tokens".to_owned(), 2),
+            ]
+            .into(),
+        },
+        rounding_policy: PricingRoundingPolicy {
+            mode: PricingRoundingMode::Up,
+            quantum_units: 1,
+        },
+        organization_usable: true,
+        policy_active: true,
+    }));
+    let baseline = sqlx::query_scalar::<_, String>(
+        "SELECT COALESCE(sum(actual_cost_nanos),0)::text FROM attempt_usage_hourly WHERE target_id=$1"
+    ).bind(candidate.target.id.as_uuid()).fetch_one(store.pool()).await.unwrap().parse::<u128>().unwrap();
+    let logical_baseline = sqlx::query_scalar::<_, String>(
+        "SELECT COALESCE(sum(cost_nanos),0)::text FROM logical_usage_hourly WHERE route_id=$1",
+    )
+    .bind(admission.route.id.as_uuid())
+    .fetch_one(store.pool())
+    .await
+    .unwrap()
+    .parse::<u128>()
+    .unwrap();
+    // Own the evidence across a pending await, then cancel the future. Explicit
+    // finish followed by Drop must produce exactly the same one terminal fact.
+    for explicit in [false, true] {
+        let mut reservation = super::AttemptReservation::unconstrained();
+        reservation.mark_dispatched();
+        let mut telemetry = AttemptTelemetry::new(admission, &candidate, &reservation);
+        telemetry.mark_dispatched();
+        let mut settlement = ResponseSettlement::new(reservation, telemetry);
+        let usage = ProviderUsage {
+            completeness: UsageCompleteness::Complete,
+            dimensions: [
+                ("input_tokens".to_owned(), 3),
+                ("output_tokens".to_owned(), 5),
+            ]
+            .into(),
+        };
+        settlement.observe(usage.clone());
+        let mut logical = LogicalTelemetry::new(admission, tokio::time::Instant::now());
+        logical.observe(&usage, &candidate.deployment);
+        if explicit {
+            settlement.finish();
+        }
+        let cancelled = super::lifetime::before(
+            tokio::time::Instant::now() + Duration::from_millis(10),
+            async move {
+                let _settlement = settlement;
+                let _logical = logical;
+                std::future::pending::<()>().await;
+            },
+        )
+        .await;
+        assert!(cancelled.is_err());
+    }
+    application.usage.flush_now().await;
+    let after = sqlx::query_scalar::<_, String>(
+        "SELECT COALESCE(sum(actual_cost_nanos),0)::text FROM attempt_usage_hourly WHERE target_id=$1"
+    ).bind(candidate.target.id.as_uuid()).fetch_one(store.pool()).await.unwrap().parse::<u128>().unwrap();
+    assert_eq!(
+        after - baseline,
+        26,
+        "cancellation retains actual usage and settles each attempt exactly once"
+    );
+
+    let logical_after = sqlx::query_scalar::<_, String>(
+        "SELECT COALESCE(sum(cost_nanos),0)::text FROM logical_usage_hourly WHERE route_id=$1",
+    )
+    .bind(admission.route.id.as_uuid())
+    .fetch_one(store.pool())
+    .await
+    .unwrap()
+    .parse::<u128>()
+    .unwrap();
+    assert_eq!(logical_after - logical_baseline, 26);
+    Box::pin(
+        super::admission::tests::assert_response_settlement_charges_paired_grants(
+            admission, &candidate,
+        ),
+    )
+    .await;
+
+    let native = crate::protocols::parse_openai_chat(Bytes::from(json!({
+        "model":admission.route.model_key,"messages":[{"role":"user","content":"unaltered prompt"}],
+        "prompt_cache_key":"caller-cache"
+    }).to_string()), "isolation-test").unwrap();
+    let first: Value = serde_json::from_slice(
+        &super::isolation::prepare_body(admission, &candidate, &native, 16).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first["messages"], native.envelope["messages"]);
+    assert_ne!(first["prompt_cache_key"], "caller-cache");
+    let mut other = admission.clone();
+    if let super::GatewayPrincipal::GatewayKey { key_id, .. } = &mut other.principal {
+        *key_id = crate::domain::GatewayKeyId::new();
+    }
+    let second: Value = serde_json::from_slice(
+        &super::isolation::prepare_body(&other, &candidate, &native, 16).unwrap(),
+    )
+    .unwrap();
+    assert_ne!(first["prompt_cache_key"], second["prompt_cache_key"]);
+    let mut code = native.clone();
+    code.family = IngressProtocolFamily::OpenaiResponses;
+    code.envelope = json!({"input":"x","tools":[{"type":"code_interpreter","container":{"type":"auto","file_ids":["file-private"]}}]});
+    assert!(super::isolation::prepare_body(admission, &candidate, &code, 16).is_err());
+    let mut semantic = native.clone();
+    semantic.family = IngressProtocolFamily::GoogleGemini;
+    semantic.envelope = json!({"contents":[],"cachedContent":"cachedContents/private"});
+    assert!(super::isolation::prepare_body(admission, &candidate, &semantic, 16).is_err());
+    candidate.deployment.state_isolation_profile = json!({"mode":"organization_dedicated"});
+    assert!(super::isolation::prepare_body(admission, &candidate, &semantic, 16).is_err());
+    candidate.deployment.scope = crate::domain::CatalogScopeKind::Organization;
+    candidate.deployment.organization_id = Some(admission.organization.id);
+    let allowed: Value = serde_json::from_slice(
+        &super::isolation::prepare_body(admission, &candidate, &semantic, 16).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(allowed["cachedContent"], semantic.envelope["cachedContent"]);
+    let allowed_code: Value = serde_json::from_slice(
+        &super::isolation::prepare_body(admission, &candidate, &code, 16).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(allowed_code["tools"], code.envelope["tools"]);
+    other.organization.id = OrganizationId::new();
+    assert!(super::isolation::prepare_body(&other, &candidate, &semantic, 16).is_err());
 }

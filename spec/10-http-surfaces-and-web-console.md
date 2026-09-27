@@ -335,11 +335,7 @@ GET /api/v1/system/usage/breakdown
 GET /api/v1/organizations/{organization_id}/audit
 ```
 
-Membership updates can set role and scope ceiling together. Removal and invitation acceptance remain explicit commands because they have lifecycle/token semantics. Organization route updates may replace complete target configuration atomically. Route create always names one eligible active-member `owner_user_id`; a Management-key or system-administrator actor never becomes or fabricates that owner. Ownership transfer is a distinct audited command requiring the current route ETag and one eligible active-member destination:
-
-```text
-POST /api/v1/organizations/{organization_id}/model-routes/{route_id}/actions/transfer-ownership
-```
+Membership updates can set role and scope ceiling together. Removal and invitation acceptance remain explicit commands because they have lifecycle/token semantics. Organization route updates may replace complete target configuration atomically. Routes are organization resources; creation records audit attribution without selecting a human owner, and membership lifecycle does not alter route admission.
 
 Gateway-key routes add explicit one-time operations:
 

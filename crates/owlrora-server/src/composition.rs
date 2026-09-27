@@ -149,6 +149,24 @@ impl ServerBuilder {
             )?
             .with_coordinator(coordinator),
         );
+        if let Some(endpoint) = &self.config.otlp_endpoint {
+            let telemetry = crate::telemetry::Telemetry::build(
+                endpoint.to_string(),
+                self.config.trace_sample_ratio,
+            )
+            .await;
+            let telemetry = match telemetry {
+                Ok(telemetry) => telemetry,
+                Err(_) => {
+                    runtime.shutdown().await;
+                    return Err(StartupError::Application(
+                        crate::application::ApplicationError::DependencyUnavailable,
+                    ));
+                }
+            };
+            telemetry.observe_process(&application);
+            let _ = application.usage.telemetry.set(telemetry);
+        }
         if self.config.profile.management_workers_enabled() {
             application.start_identity_refresh_controller();
             application.start_codex_credential_workers();
@@ -159,12 +177,21 @@ impl ServerBuilder {
         } else {
             health_router()
         };
+        router = router.merge(http::operational_router(Arc::clone(&application)));
         if self.config.profile.management_enabled() {
             router = router.merge(http::management_router(Arc::clone(&application)));
         }
         if self.config.profile.gateway_enabled() {
             router = router.merge(http::gateway_router(Arc::clone(&application)));
         }
+        router = router.layer(axum::middleware::from_fn_with_state(
+            crate::lifecycle::DrainPolicy {
+                lifecycle: Arc::clone(&application.lifecycle),
+                request_grace: self.config.shutdown_request_timeout,
+                stream_grace: self.config.shutdown_stream_timeout,
+            },
+            crate::lifecycle::request_drain,
+        ));
         Ok(BuiltServer {
             router,
             runtime: Some(runtime),
@@ -220,17 +247,40 @@ impl BuiltServer {
         {
             application.start_gateway_workers().await;
         }
-        let result = axum::serve(
+        let lifecycle = application.as_ref().map_or_else(
+            || Arc::new(crate::lifecycle::Lifecycle::default()),
+            |application| Arc::clone(&application.lifecycle),
+        );
+        let request_grace = application
+            .as_ref()
+            .map_or(std::time::Duration::from_secs(15), |app| {
+                app.config.shutdown_request_timeout
+            });
+        let stream_grace = application
+            .as_ref()
+            .map_or(std::time::Duration::from_secs(30), |app| {
+                app.config.shutdown_stream_timeout
+            });
+        let result = crate::lifecycle::serve(
             listener,
-            router.into_make_service_with_connect_info::<SocketAddr>(),
+            router,
+            lifecycle,
+            request_grace,
+            stream_grace,
+            shutdown,
         )
-        .with_graceful_shutdown(shutdown)
         .await;
-        if let Some(application) = application {
+        if let Some(application) = &application {
             application.shutdown_gateway_workers().await;
         }
         if let Some(runtime) = runtime {
             runtime.shutdown().await;
+        }
+        if let Some(telemetry) = application
+            .as_ref()
+            .and_then(|app| app.usage.telemetry.get())
+        {
+            telemetry.shutdown().await;
         }
         result
     }
@@ -420,4 +470,113 @@ fn mac_root_context(
         provider_format_version: pair.format_version(),
     })
     .map_err(|_| StartupError::InvalidCustodyMetadata)
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::*;
+    use axum::{
+        body::{Body, to_bytes},
+        http::{Request, StatusCode},
+    };
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use std::collections::BTreeMap;
+    use tower::ServiceExt as _;
+
+    #[tokio::test]
+    async fn each_profile_exposes_only_coarse_readiness_and_drain_fails_closed() {
+        let Ok(database_url) = std::env::var("OWLRORA_TEST_DATABASE_URL") else {
+            return;
+        };
+        let Ok(redis_url) = std::env::var("OWLRORA_TEST_REDIS_URL") else {
+            return;
+        };
+        let _guard = crate::adapters::postgres::test_support::shared_database_test_lock().await;
+        for profile in ["full", "management", "gateway", "worker", "health-only"] {
+            let values = BTreeMap::from([
+                ("OWLRORA_PROFILE".to_owned(), profile.to_owned()),
+                ("OWLRORA_DATABASE_URL".to_owned(), database_url.clone()),
+                ("OWLRORA_REDIS_URL".to_owned(), redis_url.clone()),
+                (
+                    "OWLRORA_SECRET_ROOT".to_owned(),
+                    URL_SAFE_NO_PAD.encode([9_u8; 32]),
+                ),
+                (
+                    "OWLRORA_PUBLIC_ORIGIN".to_owned(),
+                    "http://127.0.0.1:8080".to_owned(),
+                ),
+                (
+                    "OWLRORA_SEED_ADMIN_API_KEY".to_owned(),
+                    crate::domain::generate_management_key().expose_once(),
+                ),
+            ]);
+            let config = ServerConfig::from_values(&values).unwrap();
+            let server = ServerBuilder::new(Arc::new(config.clone()))
+                .build()
+                .await
+                .unwrap();
+            let response = server
+                .router()
+                .oneshot(Request::get("/ready").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            if profile == "health-only" {
+                assert_eq!(response.status(), StatusCode::NOT_FOUND);
+                continue;
+            }
+            assert_eq!(response.status(), StatusCode::OK, "{profile}");
+            assert_eq!(
+                &to_bytes(response.into_body(), 1024).await.unwrap()[..],
+                b"{\"status\":\"ready\"}"
+            );
+            let app = server.application().unwrap();
+            app.lifecycle.begin_drain();
+            let response = server
+                .router()
+                .oneshot(Request::get("/ready").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{profile}"
+            );
+            assert_eq!(
+                &to_bytes(response.into_body(), 1024).await.unwrap()[..],
+                b"{\"status\":\"not_ready\"}"
+            );
+            let response = server
+                .router()
+                .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            app.shutdown_gateway_workers().await;
+            server.runtime().unwrap().shutdown().await;
+
+            let mut required_config = config;
+            required_config.required_route_ids =
+                vec![crate::domain::RouteId::from_uuid(Uuid::now_v7())];
+            let server = ServerBuilder::new(Arc::new(required_config))
+                .build()
+                .await
+                .unwrap();
+            let response = server
+                .router()
+                .oneshot(Request::get("/ready").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unknown required route: {profile}"
+            );
+            server
+                .application()
+                .unwrap()
+                .shutdown_gateway_workers()
+                .await;
+            server.runtime().unwrap().shutdown().await;
+        }
+    }
 }

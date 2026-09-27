@@ -2819,6 +2819,7 @@ mod tests {
                 management_organization_ceiling: Some(vec![organization_id]),
             },
             generation: Arc::new(RuntimeGeneration {
+                build_id: Uuid::now_v7(),
                 snapshot: Arc::new(RuntimeSnapshot {
                     revision: 0,
                     security_revision: 0,

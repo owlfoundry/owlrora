@@ -887,6 +887,7 @@ fn patch_oidc_subject_generation(
         );
     }
     Arc::new(RuntimeGeneration {
+        build_id: base_generation.build_id,
         snapshot: Arc::new(snapshot),
         credential_clients: Arc::clone(&base_generation.credential_clients),
     })
@@ -1408,6 +1409,7 @@ mod tests {
         let user_id = UserId::new();
         let organization_id = OrganizationId::new();
         let base = Arc::new(RuntimeGeneration {
+            build_id: Uuid::now_v7(),
             snapshot: Arc::new(crate::runtime::RuntimeSnapshot {
                 revision: 7,
                 security_revision: 7,

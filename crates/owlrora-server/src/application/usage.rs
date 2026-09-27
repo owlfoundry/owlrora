@@ -113,10 +113,10 @@ pub struct UsageCompleteness {
 impl Default for UsageCompleteness {
     fn default() -> Self {
         Self {
-            source: "persisted_hourly_aggregates",
+            source: "persisted_hourly_and_daily_aggregates",
             includes_unflushed_process_facts: false,
-            daily_rollups: "not_implemented",
-            note: "Results include only aggregate facts durably flushed before this query.",
+            daily_rollups: "atomic_incremental",
+            note: "Only durably flushed facts are included. Hourly and partial-day detail is retained 30 days; full UTC days are retained 366 days. Replay is limited to seven days; process loss remains possible.",
         }
     }
 }
@@ -468,12 +468,25 @@ fn usage_range(query: &UsageQuery) -> UsageRange {
     }
 }
 
+// Full UTC days use compact daily facts; partial boundary days retain exact
+// hourly semantics. The two sources are disjoint, never summed twice.
+fn usage_source(table: &str, granularity: UsageGranularity, start: usize, end: usize) -> String {
+    if granularity == UsageGranularity::Hour {
+        return table.to_owned();
+    }
+    let daily = table.replace("_hourly", "_daily");
+    format!("(SELECT * FROM {table} WHERE NOT (
+        date_trunc('day', bucket_start AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' >= ${start}
+        AND (date_trunc('day', bucket_start AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') + interval '24 hours' <= ${end})
+        UNION ALL SELECT * FROM {daily} WHERE bucket_date >= ${start}
+        AND bucket_date + interval '24 hours' <= ${end}) usage")
+}
+
 async fn query_logical_usage(
     application: &Application,
     query: &UsageQuery,
 ) -> Result<Vec<LogicalUsageBucket>, ApplicationError> {
-    let rows = sqlx::query(
-        "SELECT
+    let sql = "SELECT
              date_trunc($1, bucket_start AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS bucket_start,
              SUM(request_count)::text AS request_count,
              SUM(input_units)::text AS input_units,
@@ -490,19 +503,28 @@ async fn query_logical_usage(
            AND ($7::uuid IS NULL OR gateway_api_key_id=$7)
            AND ($8::uuid IS NULL OR route_id=$8)
            AND ($9::text IS NULL OR outcome_class=$9)
-         GROUP BY 1 ORDER BY 1",
-    )
-    .bind(query.granularity.sql_value())
-    .bind(query.start)
-    .bind(query.end)
-    .bind(query.organization_id)
-    .bind(query.principal_kind.as_deref())
-    .bind(query.user_id)
-    .bind(query.gateway_api_key_id)
-    .bind(query.route_id)
-    .bind(query.outcome.as_deref())
-    .fetch_all(application.store.pool())
-    .await?;
+         GROUP BY 1 ORDER BY 1";
+    let sql = sql
+        .replace(
+            "logical_usage_hourly",
+            &usage_source("logical_usage_hourly", query.granularity, 2, 3),
+        )
+        .replace(
+            "attempt_usage_hourly",
+            &usage_source("attempt_usage_hourly", query.granularity, 2, 3),
+        );
+    let rows = sqlx::query(&sql)
+        .bind(query.granularity.sql_value())
+        .bind(query.start)
+        .bind(query.end)
+        .bind(query.organization_id)
+        .bind(query.principal_kind.as_deref())
+        .bind(query.user_id)
+        .bind(query.gateway_api_key_id)
+        .bind(query.route_id)
+        .bind(query.outcome.as_deref())
+        .fetch_all(application.store.pool())
+        .await?;
     rows.into_iter()
         .map(|row| {
             Ok(LogicalUsageBucket {
@@ -523,8 +545,7 @@ async fn query_attempt_usage(
     application: &Application,
     query: &UsageQuery,
 ) -> Result<Vec<AttemptUsageBucket>, ApplicationError> {
-    let rows = sqlx::query(
-        "SELECT
+    let sql = "SELECT
              date_trunc($1, bucket_start AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS bucket_start,
              SUM(attempt_count)::text AS attempt_count,
              SUM(input_units)::text AS input_units,
@@ -548,24 +569,33 @@ async fn query_attempt_usage(
            AND ($12::uuid IS NULL OR endpoint_id=$12)
            AND ($13::uuid IS NULL OR credential_id=$13)
            AND ($14::text IS NULL OR terminal_class=$14)
-         GROUP BY 1 ORDER BY 1",
-    )
-    .bind(query.granularity.sql_value())
-    .bind(query.start)
-    .bind(query.end)
-    .bind(query.organization_id)
-    .bind(query.principal_kind.as_deref())
-    .bind(query.user_id)
-    .bind(query.gateway_api_key_id)
-    .bind(query.route_id)
-    .bind(query.target_id)
-    .bind(query.origin.as_deref())
-    .bind(query.deployment_id)
-    .bind(query.endpoint_id)
-    .bind(query.credential_id)
-    .bind(query.outcome.as_deref())
-    .fetch_all(application.store.pool())
-    .await?;
+         GROUP BY 1 ORDER BY 1";
+    let sql = sql
+        .replace(
+            "logical_usage_hourly",
+            &usage_source("logical_usage_hourly", query.granularity, 2, 3),
+        )
+        .replace(
+            "attempt_usage_hourly",
+            &usage_source("attempt_usage_hourly", query.granularity, 2, 3),
+        );
+    let rows = sqlx::query(&sql)
+        .bind(query.granularity.sql_value())
+        .bind(query.start)
+        .bind(query.end)
+        .bind(query.organization_id)
+        .bind(query.principal_kind.as_deref())
+        .bind(query.user_id)
+        .bind(query.gateway_api_key_id)
+        .bind(query.route_id)
+        .bind(query.target_id)
+        .bind(query.origin.as_deref())
+        .bind(query.deployment_id)
+        .bind(query.endpoint_id)
+        .bind(query.credential_id)
+        .bind(query.outcome.as_deref())
+        .fetch_all(application.store.pool())
+        .await?;
     rows.into_iter()
         .map(|row| {
             Ok(AttemptUsageBucket {
@@ -604,6 +634,7 @@ async fn query_breakdown(
             "actual_cost_nanos",
         ),
     };
+    let table = usage_source(table, query.usage.granularity, 1, 2);
     let order = match query.order {
         UsageBreakdownOrder::CountDesc => format!("SUM({count_alias}) DESC, dimension_value ASC"),
         UsageBreakdownOrder::CostDesc => format!(
@@ -878,6 +909,10 @@ impl Application {
                 active_logical_keys: process.active_logical_keys,
                 active_attempt_keys: process.active_attempt_keys,
                 pending_batches: process.pending_batches,
+                unconfirmed_logical_facts: process.unconfirmed_logical_facts,
+                unconfirmed_attempt_facts: process.unconfirmed_attempt_facts,
+                retention_status: process.last_retention_error.unwrap_or("ready"),
+                retained_rows_deleted: process.retained_rows_deleted,
                 lost_logical_facts: process.lost_logical_facts,
                 lost_attempt_facts: process.lost_attempt_facts,
                 flush_status: if process.last_flush_error.is_some() {
@@ -890,8 +925,8 @@ impl Application {
             latest_persisted_logical_bucket: persisted.try_get("latest_logical_bucket")?,
             latest_persisted_attempt_bucket: persisted.try_get("latest_attempt_bucket")?,
             rollups: UsagePipelineRollupView {
-                status: "not_implemented",
-                note: "Daily aggregate tables exist, but no rollup writer is active.",
+                status: "atomic_incremental",
+                note: "Hourly and daily deltas commit with one deduplication receipt. Retention: hourly 30 days, daily 366 days, receipts eight days; replay window seven days.",
             },
             query_completeness: UsageCompleteness::default(),
         })
@@ -919,6 +954,10 @@ pub struct UsagePipelineProcessView {
     pub active_logical_keys: usize,
     pub active_attempt_keys: usize,
     pub pending_batches: usize,
+    pub unconfirmed_logical_facts: u64,
+    pub unconfirmed_attempt_facts: u64,
+    pub retention_status: &'static str,
+    pub retained_rows_deleted: u64,
     pub lost_logical_facts: u64,
     pub lost_attempt_facts: u64,
     pub flush_status: &'static str,

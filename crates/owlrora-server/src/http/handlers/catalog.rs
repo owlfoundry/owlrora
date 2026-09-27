@@ -10,11 +10,11 @@ use crate::{
         CreateGatewayApiKey, CreateModelDeployment, CreateModelRoute, CreatePricingPolicy,
         CreateReliabilityPolicy, CreateUpstreamCredential, CreateUpstreamEndpoint,
         IdempotentCommand, PublishPricingPolicyVersion, ReplaceEgressCustomCa,
-        ReplaceUpstreamCredentialSecret, RotateGatewayApiKey, StartCodexLogin,
-        TransferModelRouteOwnership, UpdateBudgetPolicy, UpdateCatalogGrantSet,
-        UpdateEgressNetworkPolicy, UpdateGatewayApiKey, UpdateGatewayPolicyCeilings,
-        UpdateGatewayRequestLimits, UpdateModelDeployment, UpdateModelRoute, UpdatePricingPolicy,
-        UpdateReliabilityPolicy, UpdateUpstreamCredential, UpdateUpstreamEndpoint,
+        ReplaceUpstreamCredentialSecret, RotateGatewayApiKey, StartCodexLogin, UpdateBudgetPolicy,
+        UpdateCatalogGrantSet, UpdateEgressNetworkPolicy, UpdateGatewayApiKey,
+        UpdateGatewayPolicyCeilings, UpdateGatewayRequestLimits, UpdateModelDeployment,
+        UpdateModelRoute, UpdatePricingPolicy, UpdateReliabilityPolicy, UpdateUpstreamCredential,
+        UpdateUpstreamEndpoint,
     },
     domain::{
         AccountingOrigin, CredentialId, CredentialLoginSessionId, DeploymentId, EndpointId,
@@ -1489,28 +1489,6 @@ async fn update_model_route(
         .update_model_route(
             &identity,
             scope,
-            id,
-            if_match(&headers, &identity.request_id)?,
-            input,
-        )
-        .await
-        .map_err(|error| app_error(error, &identity))?;
-    Ok(json_etag_response(value, &etag))
-}
-
-pub async fn transfer_organization_model_route_ownership(
-    State(state): State<HttpState>,
-    Path((organization_id, id)): Path<(OrganizationId, RouteId)>,
-    headers: HeaderMap,
-    ApiJson(input): ApiJson<TransferModelRouteOwnership>,
-) -> Result<Response, ApiError> {
-    let identity = authenticate(&state.application, &headers).await?;
-    require_command_security(&state.application, &identity, &headers)?;
-    let (value, etag) = state
-        .application
-        .transfer_model_route_ownership(
-            &identity,
-            organization_id,
             id,
             if_match(&headers, &identity.request_id)?,
             input,

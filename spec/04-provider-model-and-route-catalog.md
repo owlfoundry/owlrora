@@ -215,8 +215,6 @@ A `ModelRoute` is the client-addressable model and routing policy.
 | --- | --- |
 | `id` | immutable opaque identity |
 | `scope` | deployment or one organization |
-| `owner_user_id` | required for organization-owned routes |
-| `owner_membership_id` | exact active membership selected at create/transfer; prevents leave/rejoin from silently restoring authority |
 | `model_key` | exact client-facing key unique in scope and protocol family, including drafts and disabled routes |
 | `ingress_protocol_family` | one native request contract |
 | `required_base_capabilities` | contract every target must satisfy |
@@ -242,7 +240,7 @@ A system route is visible to an organization only through an `OrganizationRouteG
 
 Advanced tenants may create organization routes from explicitly granted system deployments, same-organization BYOK deployments, and granted reliability policies. A system-route grant exposes the complete system route and its targets without separately granting those deployments for that route. A composed organization route instead needs an organization deployment grant for each system deployment target; each same-organization deployment already proves its own endpoint grant. A system reliability policy needs its separate reliability-policy grant. Route, deployment, endpoint, and reliability grants never imply one another. Advanced tenants may mix both deployment origins in one route and choose route-local targets, priorities, and weights. System and BYOK targets participate in the same capability filtering, health, weighting, affinity, retry, failover, streaming, continuation, and observability behavior; OwlRora does not reduce BYOK to a separate direct-provider shortcut. Only attempt accounting differs: a Gateway-key attempt always consumes the key's overall budget and then the organization origin pool derived from the selected deployment. Organization owners/admins—and members only when explicit self-service policy allows—may create/replace organization BYOK credentials and create organization deployments, but they cannot change system endpoints, transports, egress policy, system health ceilings, or another scope's secret material. BYOK resources remain organization-owned when their creator leaves.
 
-Organization-route create always names one eligible active-member `owner_user_id` and stores that exact `owner_membership_id`; an acting Management-key/system-administrator principal cannot be substituted or fabricated as that owner. Ownership can be transferred only to another eligible active membership through an explicit audited command that requires the current route ETag. Removal of the bound membership disables new route admission until ownership is explicitly transferred. A later membership for the same user has a different identity and never silently restores admission.
+Organization routes belong to their organization, not an employee membership. Authorized organization or deployment administrators and resource principals create and edit them without selecting a human owner. `created_by_principal` is immutable audit attribution. Member removal, user disablement, and rejoining neither disable nor reactivate routes. Resource status, organization status, target readiness, and explicit grants remain the admission controls. There is no personal route-ownership transfer command.
 
 ## 8. Route targets
 

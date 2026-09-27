@@ -47,10 +47,12 @@ pub async fn authenticate(
         if bearer.starts_with("owlrora_mgmt_v1.") {
             return application
                 .authenticate_management_key(bearer, request_id.clone())
+                .await
                 .map_err(|error| ApiError::new(error, request_id));
         }
         return application
             .authenticate_external_jwt(bearer, request_id.clone())
+            .await
             .map_err(|error| ApiError::new(error, request_id));
     }
     if let Some(session) = session {
@@ -68,7 +70,7 @@ pub async fn authenticate(
     ))
 }
 
-pub fn authenticate_management_key_exchange(
+pub async fn authenticate_management_key_exchange(
     application: &Application,
     headers: &HeaderMap,
 ) -> Result<RequestIdentity, ApiError> {
@@ -86,6 +88,7 @@ pub fn authenticate_management_key_exchange(
     }
     application
         .authenticate_management_key(raw, request_id.clone())
+        .await
         .map_err(|error| ApiError::new(error, request_id))
 }
 

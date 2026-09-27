@@ -22,8 +22,8 @@ This is evidence of tested combinations, not a declaration that every older Post
 | ---------------- | --------------------------------------------------------------------------- | ---------------------- | ----------------------- |
 | `full` (default) | `/health`, public coarse `/ready`, Console, Management API, Gateway ingress | management and gateway | PostgreSQL, Redis       |
 | `management`     | `/health`, public coarse `/ready`, Console, Management API                  | management             | PostgreSQL, Redis       |
-| `gateway`        | `/health`, Gateway ingress; no `/ready`                                     | gateway                | PostgreSQL, Redis       |
-| `worker`         | `/health` only                                                              | management and gateway | PostgreSQL, Redis       |
+| `gateway`        | `/health`, `/ready`, Gateway ingress                                     | gateway                | PostgreSQL, Redis       |
+| `worker`         | `/health` and `/ready`                                                              | management and gateway | PostgreSQL, Redis       |
 | `health-only`    | `/health` only                                                              | none                   | none                    |
 
 The official binary uses bundled software custody, so every non-`health-only` profile also requires `OWLRORA_SECRET_ROOT`. `full` and `management` additionally require the public origin and seed administrator key.
@@ -184,7 +184,7 @@ curl -fsS http://127.0.0.1:8080/health
 
 `/health` returns `ok` when the HTTP process is alive. It does not prove PostgreSQL, Redis, runtime publication, routes, or workers are ready.
 
-For `full` and `management`, `/ready` is a public coarse load-balancer signal that returns only `{"status":"ready"}` or `{"status":"not_ready"}`:
+For every profile except `health-only`, `/ready` is a public coarse load-balancer signal that returns only `{"status":"ready"}` or `{"status":"not_ready"}`:
 
 ```bash
 curl -fsS https://owlrora.example.com/ready
@@ -200,7 +200,7 @@ owlrora \
   system operations readiness
 ```
 
-`gateway` and `worker` profiles do not expose `/ready` in the current implementation. Use `/health` only for process liveness. Protected operations called on a management process describe that process plus durable/shared evidence; they do not prove the local runtime or worker state of separate gateway/worker processes. Use deployment-platform rollout checks and external end-to-end probes for those profiles.
+Use each process's `/ready` for local admission and `/health` only for liveness. Protected operations called on a management process describe that process plus durable/shared evidence; they do not prove the local runtime or worker state of separate gateway/worker processes. Combine direct readiness probes, deployment-platform rollout checks, OTLP, and external end-to-end probes for split profiles.
 
 ## Next steps
 

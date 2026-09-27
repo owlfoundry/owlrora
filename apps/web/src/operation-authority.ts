@@ -45,6 +45,7 @@ export interface OperationAuthority {
   client_generated_idempotency_key: boolean;
   secret_input: { field: string; mode: "replace_body" | "merge_into_candidate" } | null;
   one_time_secret_response: boolean;
+  one_time_result_field: string | null;
   sensitive_result: boolean;
   high_impact: boolean;
   destructive: boolean;

@@ -3,7 +3,7 @@ use std::{
     net::SocketAddr,
     str::FromStr as _,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use arc_swap::ArcSwap;
@@ -36,18 +36,55 @@ pub struct PublicationStatus {
     pub database_revision: i64,
     pub database_security_revision: i64,
     pub applied_revision: i64,
+    pub build_id: Uuid,
     pub built_at: DateTime<Utc>,
     pub confirmed_at: DateTime<Utc>,
     pub last_error: Option<String>,
 }
 
+// Authority evidence and the generation it qualifies are always read together.
+struct PublishedRuntime {
+    generation: Arc<RuntimeGeneration>,
+    status: Arc<PublicationStatus>,
+}
+
+struct RefreshSchedule {
+    observed_revision: Option<i64>,
+    retry_at: Instant,
+    retry_delay: Duration,
+}
+
+impl Default for RefreshSchedule {
+    fn default() -> Self {
+        Self {
+            observed_revision: None,
+            retry_at: Instant::now(),
+            retry_delay: Duration::from_secs(1),
+        }
+    }
+}
+
+impl RefreshSchedule {
+    fn observe(&mut self, revision: i64) {
+        if self.observed_revision != Some(revision) {
+            self.observed_revision = Some(revision);
+            self.retry_at = Instant::now();
+            self.retry_delay = Duration::from_secs(1);
+        }
+    }
+
+    fn retry_later(&mut self) {
+        self.retry_at = Instant::now() + self.retry_delay;
+        self.retry_delay = (self.retry_delay * 2).min(Duration::from_secs(30));
+    }
+}
+
 pub struct RuntimePublisher {
     store: PgStore,
     secrets: Arc<SecretService>,
-    generation: ArcSwap<RuntimeGeneration>,
-    status: ArcSwap<PublicationStatus>,
+    published: ArcSwap<PublishedRuntime>,
     shutdown: watch::Sender<bool>,
-    refresh: tokio::sync::Mutex<()>,
+    refresh: tokio::sync::Mutex<RefreshSchedule>,
     task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     egress_dns_overrides: Arc<HashMap<String, SocketAddr>>,
 }
@@ -56,7 +93,7 @@ impl std::fmt::Debug for RuntimePublisher {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("RuntimePublisher")
-            .field("status", &self.status.load())
+            .field("status", &self.status())
             .finish_non_exhaustive()
     }
 }
@@ -75,11 +112,16 @@ impl RuntimePublisher {
         egress_dns_overrides: HashMap<String, SocketAddr>,
     ) -> Result<Arc<Self>, StoreError> {
         let egress_dns_overrides = Arc::new(egress_dns_overrides);
-        let initial = compile_generation(&store, &secrets, None, &egress_dns_overrides).await?;
+        let (initial, (database_revision, database_security_revision)) =
+            compile_fenced_generation(&store, &secrets, None, &egress_dns_overrides, || {
+                publication_revisions(&store)
+            })
+            .await?;
         let status = PublicationStatus {
-            database_revision: initial.snapshot.revision,
-            database_security_revision: initial.snapshot.security_revision,
+            database_revision,
+            database_security_revision,
             applied_revision: initial.snapshot.revision,
+            build_id: initial.build_id,
             built_at: initial.snapshot.built_at,
             confirmed_at: Utc::now(),
             last_error: None,
@@ -88,16 +130,18 @@ impl RuntimePublisher {
         let publisher = Arc::new(Self {
             store: store.clone(),
             secrets,
-            generation: ArcSwap::from_pointee(initial),
-            status: ArcSwap::from_pointee(status),
+            published: ArcSwap::from_pointee(PublishedRuntime {
+                generation: Arc::new(initial),
+                status: Arc::new(status),
+            }),
             shutdown,
-            refresh: tokio::sync::Mutex::new(()),
+            refresh: tokio::sync::Mutex::new(RefreshSchedule::default()),
             task: tokio::sync::Mutex::new(None),
             egress_dns_overrides,
         });
         let task_publisher = Arc::clone(&publisher);
         let task = tokio::spawn(async move {
-            run_publication_loop(task_publisher, store, receiver).await;
+            run_publication_loop(task_publisher, receiver).await;
         });
         *publisher.task.lock().await = Some(task);
         Ok(publisher)
@@ -105,83 +149,192 @@ impl RuntimePublisher {
 
     #[must_use]
     pub fn capture(&self) -> Arc<RuntimeGeneration> {
-        self.generation.load_full()
+        Arc::clone(&self.published.load().generation)
     }
 
     #[must_use]
     pub fn status(&self) -> Arc<PublicationStatus> {
-        self.status.load_full()
+        Arc::clone(&self.published.load().status)
     }
 
     #[must_use]
-    pub fn capture_for_admission(
+    pub fn capture_for_authority(
         &self,
         now: DateTime<Utc>,
         max_security_age: Duration,
     ) -> Option<Arc<RuntimeGeneration>> {
-        for _ in 0..4 {
-            let generation = self.capture();
-            let status = self.status();
-            let security_state_current = security_revision_is_current(
-                generation.snapshot.security_revision,
-                &status,
-                now,
-                max_security_age,
-            );
-            let tightening_due = generation
-                .snapshot
-                .organizations
-                .values()
-                .filter_map(|organization| organization.pending_tightening_deadline)
-                .min();
-            if !security_state_current || tightening_due.is_some_and(|deadline| deadline <= now) {
-                return None;
-            }
-            if Arc::ptr_eq(&generation, &self.capture()) {
-                return Some(generation);
-            }
+        let published = self.published.load();
+        security_revision_is_current(
+            published.generation.snapshot.security_revision,
+            &published.status,
+            now,
+            max_security_age,
+        )
+        .then(|| Arc::clone(&published.generation))
+    }
+
+    pub(crate) async fn capture_after_refresh(
+        &self,
+        max_security_age: Duration,
+        max_wait: Duration,
+    ) -> Option<Arc<RuntimeGeneration>> {
+        if let Some(generation) = self.capture_for_authority(Utc::now(), max_security_age) {
+            return Some(generation);
         }
-        None
+        // Wait only for existing publication work. Authentication must not
+        // initiate database/custody I/O or reset background retry backoff.
+        let _owner = tokio::time::timeout(max_wait, self.refresh.lock())
+            .await
+            .ok()?;
+        self.capture_for_authority(Utc::now(), max_security_age)
     }
 
     pub async fn refresh_now(&self) -> Result<i64, StoreError> {
-        let _refresh = self.refresh.lock().await;
+        self.reconcile(true).await
+    }
+
+    // Polling, explicit repair, and publication share one owner. In particular, a
+    // failed rebuild cannot overwrite a newer observation from another refresh.
+    async fn reconcile(&self, force: bool) -> Result<i64, StoreError> {
+        let mut schedule = self.refresh.lock().await;
+        let result = self.reconcile_locked(force, &mut schedule).await;
+        if let Err(error) = &result {
+            let current = self.published.load_full();
+            self.published.store(Arc::new(PublishedRuntime {
+                generation: Arc::clone(&current.generation),
+                status: Arc::new(PublicationStatus {
+                    last_error: Some(error.to_string()),
+                    ..(*current.status).clone()
+                }),
+            }));
+            schedule.retry_later();
+        }
+        result
+    }
+
+    async fn observe_revisions(&self) -> Result<(i64, i64), StoreError> {
+        let (revision, security_revision) = publication_revisions(&self.store).await?;
+        let current = self.published.load_full();
+        let revision = revision.max(current.status.database_revision);
+        let security_revision = security_revision.max(current.status.database_security_revision);
+        self.published.store(Arc::new(PublishedRuntime {
+            generation: Arc::clone(&current.generation),
+            status: Arc::new(PublicationStatus {
+                database_revision: revision,
+                database_security_revision: security_revision,
+                confirmed_at: Utc::now(),
+                ..(*current.status).clone()
+            }),
+        }));
+        Ok((revision, security_revision))
+    }
+
+    async fn reconcile_locked(
+        &self,
+        force: bool,
+        schedule: &mut RefreshSchedule,
+    ) -> Result<i64, StoreError> {
+        let (revision, _) = self.observe_revisions().await?;
+        schedule.observe(revision);
         let prior = self.capture();
-        let candidate = compile_generation(
+        let needs_rebuild =
+            revision > prior.snapshot.revision || !prior.credential_clients.unavailable.is_empty();
+        if !force && !needs_rebuild {
+            let current = self.published.load_full();
+            if current.status.last_error.is_some() {
+                self.published.store(Arc::new(PublishedRuntime {
+                    generation: Arc::clone(&current.generation),
+                    status: Arc::new(PublicationStatus {
+                        last_error: None,
+                        ..(*current.status).clone()
+                    }),
+                }));
+            }
+            return Ok(prior.snapshot.revision);
+        }
+        if !force && Instant::now() < schedule.retry_at {
+            return Ok(prior.snapshot.revision);
+        }
+
+        let (candidate, _) = compile_fenced_generation(
             &self.store,
             &self.secrets,
             Some(&prior),
             &self.egress_dns_overrides,
+            || self.observe_revisions(),
         )
         .await?;
-        let revision = candidate.snapshot.revision;
-        let (database_revision, database_security_revision) =
-            publication_revisions(&self.store).await?;
-        if database_security_revision > candidate.snapshot.security_revision {
-            return Err(StoreError::Invariant(
-                "runtime candidate was overtaken by a security tightening",
-            ));
+        let observation = self.status();
+        if candidate.snapshot.revision < prior.snapshot.revision {
+            return Err(StoreError::Invariant("runtime revision cannot regress"));
         }
-        if revision > self.capture().snapshot.revision {
-            self.generation.store(Arc::new(candidate));
+        if candidate.credential_clients.unavailable.is_empty() {
+            schedule.retry_delay = Duration::from_secs(1);
+            schedule.retry_at = Instant::now();
+        } else {
+            schedule.retry_later();
         }
-        self.status.store(Arc::new(PublicationStatus {
-            database_revision,
-            database_security_revision,
-            applied_revision: self.capture().snapshot.revision,
-            built_at: self.capture().snapshot.built_at,
-            confirmed_at: Utc::now(),
+        let status = PublicationStatus {
+            database_revision: observation.database_revision,
+            database_security_revision: observation.database_security_revision,
+            applied_revision: candidate.snapshot.revision,
+            build_id: candidate.build_id,
+            built_at: candidate.snapshot.built_at,
+            confirmed_at: observation.confirmed_at,
             last_error: None,
+        };
+        let revision = candidate.snapshot.revision;
+        self.published.store(Arc::new(PublishedRuntime {
+            generation: Arc::new(candidate),
+            status: Arc::new(status),
         }));
-        Ok(self.capture().snapshot.revision)
+        Ok(revision)
     }
 
     pub async fn shutdown(&self) {
         let _ = self.shutdown.send(true);
         if let Some(task) = self.task.lock().await.take() {
+            task.abort();
             let _ = task.await;
         }
     }
+}
+
+// A security commit during external client construction is normal contention,
+// not a corrupt graph. Chase it immediately, but never spin without a bound.
+async fn compile_fenced_generation<F, Fut>(
+    store: &PgStore,
+    secrets: &SecretService,
+    prior: Option<&RuntimeGeneration>,
+    egress_dns_overrides: &HashMap<String, SocketAddr>,
+    mut observe: F,
+) -> Result<(RuntimeGeneration, (i64, i64)), StoreError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(i64, i64), StoreError>>,
+{
+    let mut superseded = None;
+    for _ in 0..3 {
+        let candidate = compile_generation(
+            store,
+            secrets,
+            superseded.as_ref().or(prior),
+            egress_dns_overrides,
+        )
+        .await?;
+        // Reconfirm after all external client construction. Refresh records each
+        // observation immediately, even if the next build or fence fails.
+        let revisions = observe().await?;
+        if revisions.1 <= candidate.snapshot.security_revision {
+            return Ok((candidate, revisions));
+        }
+        // Healthy clients may be reused; authority from this candidate is never
+        // published until a new complete snapshot passes its own fresh fence.
+        superseded = Some(candidate);
+    }
+    Err(StoreError::Invariant(
+        "runtime candidate was overtaken by a security tightening",
+    ))
 }
 
 fn security_revision_is_current(
@@ -199,56 +352,21 @@ fn security_revision_is_current(
 
 async fn run_publication_loop(
     publisher: Arc<RuntimePublisher>,
-    store: PgStore,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(1));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
-            _ = interval.tick() => {
-                let database_revisions = publication_revisions(&store).await;
-                match database_revisions {
-                    Ok((revision, security_revision)) if revision > publisher.capture().snapshot.revision => {
-                        if let Err(error) = publisher.refresh_now().await {
-                            let generation = publisher.capture();
-                            publisher.status.store(Arc::new(PublicationStatus {
-                                database_revision: revision,
-                                database_security_revision: security_revision,
-                                applied_revision: generation.snapshot.revision,
-                                built_at: generation.snapshot.built_at,
-                                confirmed_at: Utc::now(),
-                                last_error: Some(error.to_string()),
-                            }));
-                        }
-                    }
-                    Ok((revision, security_revision)) => {
-                        let generation = publisher.capture();
-                        publisher.status.store(Arc::new(PublicationStatus {
-                            database_revision: revision,
-                            database_security_revision: security_revision,
-                            applied_revision: generation.snapshot.revision,
-                            built_at: generation.snapshot.built_at,
-                            confirmed_at: Utc::now(),
-                            last_error: None,
-                        }));
-                    }
-                    Err(error) => {
-                        let current = publisher.status();
-                        publisher.status.store(Arc::new(PublicationStatus {
-                            database_revision: current.database_revision,
-                            database_security_revision: current.database_security_revision,
-                            applied_revision: current.applied_revision,
-                            built_at: current.built_at,
-                            confirmed_at: current.confirmed_at,
-                            last_error: Some(error.to_string()),
-                        }));
-                    }
-                }
-            }
+            biased;
             result = shutdown.changed() => {
                 if result.is_err() || *shutdown.borrow() {
                     break;
                 }
+            }
+            _ = interval.tick() => {
+                // Failure is recorded atomically by the same owner as explicit repair.
+                let _ = publisher.reconcile(false).await;
             }
         }
     }
@@ -288,6 +406,7 @@ async fn compile_generation(
     )
     .await;
     Ok(RuntimeGeneration {
+        build_id: Uuid::now_v7(),
         snapshot: Arc::new(RuntimeSnapshot {
             revision,
             security_revision,
@@ -898,7 +1017,11 @@ mod tests {
         .unwrap()
     }
 
-    async fn insert_runtime_fixture(store: &PgStore, secrets: &SecretService) -> RuntimeFixture {
+    async fn insert_runtime_fixture(
+        store: &PgStore,
+        secrets: &SecretService,
+        source_path: Option<&std::path::Path>,
+    ) -> RuntimeFixture {
         let organization_id = Uuid::now_v7();
         let user_id = Uuid::now_v7();
         let membership_id = Uuid::now_v7();
@@ -1036,13 +1159,23 @@ mod tests {
                 credential_kind,secret_source_kind,injection_kind,sharing_policy,
                 administrative_status,authentication_status,current_secret_version,
                 created_by_principal,etag_token)
-             VALUES ($1,'organization',$2,$3,'static_api_key','encrypted_database','bearer',
+             VALUES ($1,$6,$2,$3,'static_api_key',$5,'bearer',
                 'exclusive','active','ready',1,'{}',$4)",
         )
         .bind(credential_id)
-        .bind(organization_id)
+        .bind(source_path.is_none().then_some(organization_id))
         .bind(format!("runtime-credential-{credential_id}"))
         .bind(Uuid::now_v7())
+        .bind(if source_path.is_some() {
+            "mounted_file_reference"
+        } else {
+            "encrypted_database"
+        })
+        .bind(if source_path.is_some() {
+            "deployment"
+        } else {
+            "organization"
+        })
         .execute(&mut *transaction)
         .await
         .unwrap();
@@ -1062,13 +1195,15 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO upstream_credential_secret_versions(id,credential_id,version,
-                credential_state_identity_version,protected_secret_version_id,safe_fingerprint,state)
-             VALUES ($1,$2,1,1,$3,$4,'current')",
+                credential_state_identity_version,protected_secret_version_id,safe_fingerprint,state,
+                source_configuration)
+             VALUES ($1,$2,1,1,$3,$4,'current',$5)",
         )
         .bind(secret_version_id)
         .bind(credential_id)
-        .bind(protected_id)
+        .bind(source_path.is_none().then_some(protected_id))
         .bind(safe_fingerprint.to_vec())
+        .bind(source_path.map(|path| json!({"path":path})))
         .execute(&mut *transaction)
         .await
         .unwrap();
@@ -1118,29 +1253,40 @@ mod tests {
             "INSERT INTO model_deployments(id,resource_scope_kind,organization_id,name,
                 endpoint_id,credential_id,transport_kind,upstream_model_id,capability_set,
                 context_limits,state_isolation_profile,unpriced,status,created_by_principal,etag_token)
-             VALUES ($1,'organization',$2,$3,$4,$5,'openai_responses_http','gpt-runtime',
+             VALUES ($1,$7,$2,$3,$4,$5,'openai_responses_http','gpt-runtime',
                 '[\"streaming\"]','{}','{}',true,'active','{}',$6)",
         )
         .bind(deployment_id)
-        .bind(organization_id)
+        .bind(source_path.is_none().then_some(organization_id))
         .bind(format!("runtime-deployment-{deployment_id}"))
         .bind(endpoint_id)
         .bind(credential_id)
         .bind(Uuid::now_v7())
+        .bind(if source_path.is_some() { "deployment" } else { "organization" })
         .execute(&mut *transaction)
         .await
         .unwrap();
+        if source_path.is_some() {
+            sqlx::query(
+                "INSERT INTO organization_deployment_grants(organization_id,deployment_id,status,
+                    created_by_principal,etag_token) VALUES ($1,$2,'active','{}',$3)",
+            )
+            .bind(organization_id)
+            .bind(deployment_id)
+            .bind(Uuid::now_v7())
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        }
         sqlx::query(
-            "INSERT INTO model_routes(id,resource_scope_kind,organization_id,owner_user_id,
-                owner_membership_id,model_key,ingress_protocol_family,required_base_capabilities,
+            "INSERT INTO model_routes(id,resource_scope_kind,organization_id,
+                model_key,ingress_protocol_family,required_base_capabilities,
                 selection_policy,reliability_policy_id,request_policy,status,created_by_principal,etag_token)
-             VALUES ($1,'organization',$2,$3,$4,'runtime-model','openai_responses',
-                '[\"streaming\"]','{}',$5,'{}','active','{}',$6)",
+             VALUES ($1,'organization',$2,'runtime-model','openai_responses',
+                '[\"streaming\"]','{}',$3,'{}','active','{}',$4)",
         )
         .bind(route_id)
         .bind(organization_id)
-        .bind(user_id)
-        .bind(membership_id)
         .bind(reliability_id)
         .bind(Uuid::now_v7())
         .execute(&mut *transaction)
@@ -1259,17 +1405,229 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn management_authority_waits_only_for_existing_refresh_work() {
+        let _database_guard = shared_database_test_lock().await;
+        let Some(store) = connect_from_environment().await else {
+            return;
+        };
+        let secrets = secret_service(91);
+        let publisher = RuntimePublisher::start(store.clone(), secrets)
+            .await
+            .unwrap();
+        publisher.shutdown().await;
+        let initial = publisher.capture();
+        let mut owner = publisher.refresh.lock().await;
+        allocate_fixture_revision(&store, "runtime_fixture.auth_wait", true).await;
+        publisher.observe_revisions().await.unwrap();
+        let max_age = Duration::from_secs(60);
+        assert!(
+            publisher
+                .capture_for_authority(Utc::now(), max_age)
+                .is_none()
+        );
+        assert!(
+            publisher
+                .capture_after_refresh(max_age, Duration::from_millis(10))
+                .await
+                .is_none()
+        );
+        drop(owner);
+        // An idle failed/stale publisher is not repaired by authentication.
+        assert!(
+            publisher
+                .capture_after_refresh(max_age, Duration::from_millis(250))
+                .await
+                .is_none()
+        );
+        assert!(Arc::ptr_eq(&initial, &publisher.capture()));
+
+        owner = publisher.refresh.lock().await;
+        let waiting = publisher.capture_after_refresh(max_age, Duration::from_millis(250));
+        tokio::pin!(waiting);
+        tokio::select! {
+            biased;
+            _ = &mut waiting => panic!("authentication must not use known-stale authority"),
+            () = tokio::time::sleep(Duration::from_millis(10)) => {}
+        }
+        publisher.reconcile_locked(true, &mut owner).await.unwrap();
+        drop(owner);
+        let captured = waiting
+            .await
+            .expect("the existing refresh restored current authority");
+        assert!(captured.snapshot.security_revision > initial.snapshot.security_revision);
+        assert_eq!(
+            captured.snapshot.security_revision,
+            publisher.status().database_security_revision
+        );
+    }
+
+    #[tokio::test]
+    async fn security_fence_catches_up_and_bounds_continuous_tightening() {
+        let _database_guard = shared_database_test_lock().await;
+        let Some(store) = connect_from_environment().await else {
+            return;
+        };
+        let secrets = secret_service(91);
+        let publisher = RuntimePublisher::start(store.clone(), Arc::clone(&secrets))
+            .await
+            .unwrap();
+        // Drive observations ourselves so the race is deterministic, not timed.
+        publisher.shutdown().await;
+        let initial = publisher.capture();
+        for prior in [None, Some(initial.as_ref())] {
+            let observations = std::cell::Cell::new(0);
+            let (candidate, (_, security_revision)) =
+                compile_fenced_generation(&store, &secrets, prior, &HashMap::new(), || async {
+                    let count = observations.get();
+                    observations.set(count + 1);
+                    if count == 0 {
+                        allocate_fixture_revision(&store, "runtime_fixture.overtaken", true).await;
+                    }
+                    let revisions = publisher.observe_revisions().await?;
+                    assert!(Arc::ptr_eq(&initial, &publisher.capture()));
+                    assert!(
+                        publisher
+                            .capture_for_authority(Utc::now(), Duration::from_secs(60))
+                            .is_none()
+                    );
+                    Ok(revisions)
+                })
+                .await
+                .unwrap();
+            assert_eq!(observations.get(), 2);
+            assert_eq!(candidate.snapshot.security_revision, security_revision);
+            assert!(candidate.snapshot.revision > initial.snapshot.revision);
+        }
+
+        let observations = std::cell::Cell::new(0);
+        let result = compile_fenced_generation(
+            &store,
+            &secrets,
+            Some(&initial),
+            &HashMap::new(),
+            || async {
+                observations.set(observations.get() + 1);
+                allocate_fixture_revision(&store, "runtime_fixture.overtaken_again", true).await;
+                publisher.observe_revisions().await
+            },
+        )
+        .await;
+        assert!(matches!(result, Err(StoreError::Invariant(_))));
+        assert_eq!(observations.get(), 3);
+        assert!(Arc::ptr_eq(&initial, &publisher.capture()));
+        assert!(
+            publisher
+                .capture_for_authority(Utc::now(), Duration::from_secs(60))
+                .is_none()
+        );
+        publisher.refresh_now().await.unwrap();
+        assert!(
+            publisher
+                .capture_for_authority(Utc::now(), Duration::from_secs(60))
+                .is_some()
+        );
+        assert_eq!(
+            publisher.capture().snapshot.security_revision,
+            publisher.status().database_security_revision
+        );
+    }
+
+    #[tokio::test]
+    async fn organization_route_survives_employee_membership_and_user_lifecycle() {
+        let _database_guard = shared_database_test_lock().await;
+        let Some(store) = connect_from_environment().await else {
+            return;
+        };
+        let secrets = secret_service(90);
+        let fixture = insert_runtime_fixture(&store, &secrets, None).await;
+        let old_user: Uuid = sqlx::query_scalar(
+            "SELECT user_id FROM memberships WHERE organization_id=$1 AND status='active'",
+        )
+        .bind(fixture.organization_id)
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+        let replacement = Uuid::now_v7();
+        let mut transaction = store.begin().await.unwrap();
+        sqlx::query("INSERT INTO users(id,kind,status,display_name,created_by_principal,etag_token) VALUES ($1,'human','active','Replacement owner','{}',$2)")
+            .bind(replacement).bind(Uuid::now_v7()).execute(&mut *transaction).await.unwrap();
+        sqlx::query("INSERT INTO memberships(id,organization_id,user_id,role,status,created_by_principal,etag_token) VALUES ($1,$2,$3,'owner','active','{}',$4)")
+            .bind(Uuid::now_v7()).bind(fixture.organization_id).bind(replacement).bind(Uuid::now_v7()).execute(&mut *transaction).await.unwrap();
+        sqlx::query("UPDATE memberships SET status='removed',removed_at=now() WHERE organization_id=$1 AND user_id=$2")
+            .bind(fixture.organization_id).bind(old_user).execute(&mut *transaction).await.unwrap();
+        sqlx::query("UPDATE users SET status='disabled' WHERE id=$1")
+            .bind(old_user)
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        allocate_fixture_revision(&store, "runtime_fixture.employee_removed", true).await;
+        let publisher = RuntimePublisher::start(store.clone(), secrets)
+            .await
+            .unwrap();
+        let generation = publisher.capture();
+        assert!(generation.snapshot.catalog.routes[&RouteId::from_uuid(fixture.route_id)].active);
+        assert!(
+            generation
+                .snapshot
+                .gateway_keys
+                .contains_key(&fixture.lookup)
+        );
+        assert!(!generation.snapshot.identity.memberships.contains_key(&(
+            OrganizationId::from_uuid(fixture.organization_id),
+            UserId::from_uuid(old_user)
+        )));
+        publisher.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn readiness_uses_loaded_authority_required_routes_and_drain_state_without_database_io() {
+        let _database_guard = shared_database_test_lock().await;
+        let Some(store) = connect_from_environment().await else {
+            return;
+        };
+        let secrets = secret_service(91);
+        let fixture = insert_runtime_fixture(&store, &secrets, None).await;
+        allocate_fixture_revision(&store, "runtime_fixture.readiness", false).await;
+        let publisher = RuntimePublisher::start(store.clone(), secrets.clone())
+            .await
+            .unwrap();
+        let mut application = test_application(&store, &publisher, &secrets);
+        let id = RouteId::from_uuid(fixture.route_id);
+        Arc::make_mut(&mut application.config).required_route_ids = vec![id];
+        assert!(application.public_ready().await);
+        let mut generation = (*publisher.capture()).clone();
+        assert!(generation.required_route_ready(id));
+        assert!(!generation.required_route_ready(RouteId::from_uuid(Uuid::now_v7())));
+        Arc::make_mut(&mut generation.credential_clients)
+            .clients
+            .clear();
+        assert!(!generation.required_route_ready(id));
+        publisher.shutdown().await;
+        store.pool().close().await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), application.public_ready())
+                .await
+                .unwrap()
+        );
+        application.lifecycle.begin_drain();
+        assert!(!application.public_ready().await);
+    }
+
+    #[tokio::test]
     async fn runtime_generation_atomically_compiles_gateway_graph_and_clients() {
         let _database_guard = shared_database_test_lock().await;
         let Some(store) = connect_from_environment().await else {
             return;
         };
         let secrets = secret_service(91);
-        let fixture = insert_runtime_fixture(&store, &secrets).await;
+        let fixture = insert_runtime_fixture(&store, &secrets, None).await;
         allocate_fixture_revision(&store, "runtime_fixture.created", false).await;
         let publisher = RuntimePublisher::start(store.clone(), Arc::clone(&secrets))
             .await
             .unwrap();
+        let application = test_application(&store, &publisher, &secrets);
+        assert!(application.security_generation().await.is_ok());
         let first = publisher.capture();
         let verifier = first.snapshot.gateway_keys.get(&fixture.lookup).unwrap();
         assert_eq!(
@@ -1348,6 +1706,18 @@ mod tests {
             publisher.capture().snapshot.revision,
             second.snapshot.revision
         );
+        // Both surfaces reject known-stale authority even while database polls
+        // keep succeeding. Compilation failure cannot refresh old permissions.
+        for _ in 0..3 {
+            let _ = publisher.reconcile(false).await;
+            assert!(
+                publisher
+                    .capture_for_authority(Utc::now(), Duration::from_secs(60))
+                    .is_none()
+            );
+            assert!(application.security_generation().await.is_err());
+        }
+        assert!(publisher.status().database_security_revision > second.snapshot.security_revision);
         sqlx::query("UPDATE upstream_endpoints SET adapter_kind='openai_api' WHERE id=$1")
             .bind(fixture.endpoint_id)
             .execute(store.pool())
@@ -1397,6 +1767,158 @@ mod tests {
         publisher.shutdown().await;
     }
 
+    fn test_application(
+        store: &PgStore,
+        publisher: &Arc<RuntimePublisher>,
+        secrets: &Arc<SecretService>,
+    ) -> crate::application::Application {
+        let config =
+            crate::config::ServerConfig::from_values(&std::collections::BTreeMap::from([(
+                "OWLRORA_PROFILE".to_owned(),
+                "health-only".to_owned(),
+            )]))
+            .unwrap();
+        crate::application::Application::new(
+            store.clone(),
+            Arc::clone(publisher),
+            Arc::new(config),
+            Arc::clone(secrets),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn unavailable_clients_recover_at_the_same_revision_manually_and_automatically() {
+        let _database_guard = shared_database_test_lock().await;
+        let Some(store) = connect_from_environment().await else {
+            return;
+        };
+        let secrets = secret_service(91);
+        for automatic in [false, true] {
+            let path =
+                std::env::temp_dir().join(format!("owlrora-runtime-{}.secret", Uuid::now_v7()));
+            let fixture = insert_runtime_fixture(&store, &secrets, Some(&path)).await;
+            allocate_fixture_revision(&store, "runtime_fixture.file_missing", false).await;
+            let publisher = RuntimePublisher::start(store.clone(), Arc::clone(&secrets))
+                .await
+                .unwrap();
+            if !automatic {
+                publisher.shutdown().await;
+            }
+            let unavailable = publisher.capture();
+            assert_eq!(
+                unavailable
+                    .credential_clients
+                    .unavailable
+                    .get(&fixture.client_key),
+                Some(&"credential_source_unavailable"),
+            );
+            std::fs::write(&path, b"fixture-upstream-secret").unwrap();
+            if automatic {
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    while !publisher
+                        .capture()
+                        .credential_clients
+                        .clients
+                        .contains_key(&fixture.client_key)
+                    {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                })
+                .await
+                .expect("background repair must not wait for a configuration edit");
+            } else {
+                publisher.refresh_now().await.unwrap();
+            }
+            let repaired = publisher.capture();
+            assert_eq!(repaired.snapshot.revision, unavailable.snapshot.revision);
+            assert_ne!(repaired.build_id, unavailable.build_id);
+            assert_eq!(publisher.status().build_id, repaired.build_id);
+            assert!(
+                repaired
+                    .credential_clients
+                    .clients
+                    .contains_key(&fixture.client_key)
+            );
+            assert!(
+                repaired.snapshot.catalog.deployments
+                    [&crate::domain::DeploymentId::from_uuid(fixture.deployment_id)]
+                    .operational
+            );
+            assert!(
+                !unavailable
+                    .credential_clients
+                    .clients
+                    .contains_key(&fixture.client_key)
+            );
+            publisher.shutdown().await;
+            std::fs::remove_file(&path).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn expired_tenant_policy_does_not_poison_authentication_or_readiness() {
+        use crate::{
+            domain::PolicyKind,
+            runtime::{PolicyActivationKey, PolicyActivationSnapshot, PolicyActivationState},
+        };
+        let _database_guard = shared_database_test_lock().await;
+        let Some(store) = connect_from_environment().await else {
+            return;
+        };
+        let secrets = secret_service(91);
+        let fixture = insert_runtime_fixture(&store, &secrets, None).await;
+        allocate_fixture_revision(&store, "runtime_fixture.policy_isolation", false).await;
+        let publisher = RuntimePublisher::start(store.clone(), Arc::clone(&secrets))
+            .await
+            .unwrap();
+        publisher.shutdown().await;
+        let mut generation = (*publisher.capture()).clone();
+        let key = PolicyActivationKey {
+            kind: PolicyKind::GatewayKeyBudget,
+            policy_id: Uuid::now_v7(),
+        };
+        let now = Utc::now();
+        Arc::make_mut(&mut generation.snapshot)
+            .policy_activations
+            .insert(
+                key,
+                PolicyActivationSnapshot {
+                    id: crate::domain::PolicyActivationId::new(),
+                    organization_id: OrganizationId::from_uuid(fixture.organization_id),
+                    key,
+                    desired_epoch: "test".to_owned(),
+                    desired_version_id: Uuid::now_v7(),
+                    desired_generation: 2,
+                    active_epoch: Some("test".to_owned()),
+                    active_version_id: Some(Uuid::now_v7()),
+                    active_generation: Some(1),
+                    prior_epoch: None,
+                    prior_version_id: None,
+                    prior_generation: None,
+                    candidate_fence: Uuid::now_v7(),
+                    state: PolicyActivationState::Desired,
+                    tightening_deadline: Some(now - chrono::Duration::seconds(1)),
+                    prior_cutoff_at: None,
+                },
+            );
+        publisher.published.store(Arc::new(PublishedRuntime {
+            generation: Arc::new(generation),
+            status: publisher.status(),
+        }));
+        let application = test_application(&store, &publisher, &secrets);
+        assert!(application.security_generation().await.is_ok());
+        assert!(application.public_ready().await);
+        let snapshot = &publisher.capture().snapshot;
+        assert!(!snapshot.policy_admission_ready(key.kind, key.policy_id, now));
+        assert!(snapshot.policy_admission_ready(key.kind, Uuid::now_v7(), now));
+        assert!(snapshot.policy_admission_ready(
+            PolicyKind::OrganizationOriginBudget,
+            key.policy_id,
+            now
+        ));
+    }
+
     #[test]
     fn admission_uses_confirmed_security_revision_not_generation_build_age() {
         let now = Utc::now();
@@ -1404,6 +1926,7 @@ mod tests {
             database_revision: 9,
             database_security_revision: 4,
             applied_revision: 8,
+            build_id: Uuid::now_v7(),
             built_at: now - chrono::TimeDelta::hours(24),
             confirmed_at: now - chrono::TimeDelta::seconds(1),
             last_error: Some("ordinary revision failed to compile".to_owned()),

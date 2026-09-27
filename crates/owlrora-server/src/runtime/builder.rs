@@ -30,7 +30,7 @@ use crate::{
         IngressProtocolFamily, LlmFeatureCapability, LlmScopeSet, NetworkPolicyId, OrganizationId,
         PolicyActivationId, PolicyKind, PricingPolicyId, PricingPolicyVersionId, PricingRates,
         PricingRoundingPolicy, RatePolicyId, RatePolicyVersionId, ReliabilityPolicyId, RouteId,
-        SystemRouteGrantCeilings, TargetId, TransportKind, UserId, compatibility,
+        SystemRouteGrantCeilings, TargetId, TransportKind, compatibility,
     },
     secrets::SecretService,
 };
@@ -165,7 +165,7 @@ pub(super) async fn capture_gateway_runtime(
     }
 
     let rate_policies = load_rate_policies(transaction).await?;
-    let policy_activations = load_policy_activations(transaction, &mut organizations).await?;
+    let policy_activations = load_policy_activations(transaction, &organizations).await?;
     let pricing_policy_versions = load_pricing_policy_versions(transaction).await?;
     let reliability_policies = load_reliability_policies(transaction).await?;
     let endpoints = load_endpoints(transaction).await?;
@@ -297,7 +297,6 @@ async fn load_organizations(
             OrganizationSnapshot {
                 id,
                 active: row.try_get::<String, _>("status")? == "active",
-                pending_tightening_deadline: None,
                 api_key_policy: policy,
                 system_route_grants: HashMap::new(),
                 endpoint_grants: BTreeSet::new(),
@@ -466,7 +465,7 @@ async fn load_budget_policies(
 
 async fn load_policy_activations(
     transaction: &mut Transaction<'_, Postgres>,
-    organizations: &mut HashMap<OrganizationId, OrganizationSnapshot>,
+    organizations: &HashMap<OrganizationId, OrganizationSnapshot>,
 ) -> Result<HashMap<PolicyActivationKey, PolicyActivationSnapshot>, StoreError> {
     let rows = sqlx::query(
         "SELECT id,organization_id,policy_kind,policy_id,desired_epoch,desired_version_id,
@@ -481,11 +480,11 @@ async fn load_policy_activations(
     let mut activations = HashMap::with_capacity(rows.len());
     for row in rows {
         let organization_id = OrganizationId::from_uuid(row.try_get("organization_id")?);
-        let organization = organizations
-            .get_mut(&organization_id)
-            .ok_or(StoreError::Invariant(
+        if !organizations.contains_key(&organization_id) {
+            return Err(StoreError::Invariant(
                 "policy activation references unknown organization",
-            ))?;
+            ));
+        }
         let kind: PolicyKind = parse_enum(
             row.try_get("policy_kind")?,
             "invalid policy activation kind",
@@ -507,15 +506,6 @@ async fn load_policy_activations(
         };
         let tightening_deadline: Option<chrono::DateTime<chrono::Utc>> =
             row.try_get("tightening_deadline")?;
-        if state != PolicyActivationState::Active
-            && let Some(deadline) = tightening_deadline
-        {
-            organization.pending_tightening_deadline = Some(
-                organization
-                    .pending_tightening_deadline
-                    .map_or(deadline, |current| current.min(deadline)),
-            );
-        }
         let activation = PolicyActivationSnapshot {
             id: PolicyActivationId::from_uuid(row.try_get("id")?),
             organization_id,
@@ -1349,6 +1339,19 @@ async fn load_deployments(
             }
             operational &= pricing.policy_active;
         }
+        let state_isolation_profile = object_column(
+            &row,
+            "state_isolation_profile",
+            "invalid state isolation profile",
+        )?;
+        let isolation: crate::domain::StateIsolationProfile =
+            serde_json::from_value(state_isolation_profile.clone())
+                .map_err(|_| StoreError::Invariant("invalid state isolation profile"))?;
+        if !isolation.valid_for(scope) {
+            return Err(StoreError::Invariant(
+                "dedicated state isolation requires organization scope",
+            ));
+        }
         let snapshot = DeploymentSnapshot {
             id,
             scope,
@@ -1369,11 +1372,7 @@ async fn load_deployments(
             )?,
             capabilities,
             context_limits: object_column(&row, "context_limits", "invalid context limits")?,
-            state_isolation_profile: object_column(
-                &row,
-                "state_isolation_profile",
-                "invalid state isolation profile",
-            )?,
+            state_isolation_profile,
             pricing_policy_version_id,
             pricing,
             config_version: positive_u64(
@@ -1449,17 +1448,10 @@ async fn load_routes(
 ) -> Result<HashMap<RouteId, RouteSnapshot>, StoreError> {
     let rows = sqlx::query(
         "SELECT route.id, route.resource_scope_kind, route.organization_id,
-                route.owner_user_id, route.owner_membership_id, route.model_key,
+                route.model_key,
                 route.ingress_protocol_family, route.required_base_capabilities,
                 route.selection_policy, route.reliability_policy_id, route.request_policy,
-                route.status, route.config_version,
-                CASE WHEN route.resource_scope_kind='deployment' THEN true ELSE EXISTS(
-                    SELECT 1 FROM memberships membership
-                    WHERE membership.id=route.owner_membership_id
-                      AND membership.organization_id=route.organization_id
-                      AND membership.user_id=route.owner_user_id
-                      AND membership.status='active'
-                ) END AS owner_active
+                route.status, route.config_version
          FROM model_routes route",
     )
     .fetch_all(&mut **transaction)
@@ -1574,9 +1566,7 @@ async fn load_routes(
                 }
             }
         }
-        let mut active = route_status == "active"
-            && reliability.active
-            && row.try_get::<bool, _>("owner_active")?;
+        let mut active = route_status == "active" && reliability.active;
         if let Some(organization_id) = organization_id {
             let organization = organizations
                 .get(&organization_id)
@@ -1610,10 +1600,6 @@ async fn load_routes(
             id,
             scope,
             organization_id,
-            owner_user_id: row
-                .try_get::<Option<Uuid>, _>("owner_user_id")?
-                .map(UserId::from_uuid),
-            owner_membership_id: row.try_get("owner_membership_id")?,
             model_key,
             ingress_protocol_family: ingress,
             required_base_capabilities: required_capabilities,

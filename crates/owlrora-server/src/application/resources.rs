@@ -1610,6 +1610,7 @@ mod tests {
             Application::new(store.clone(), Arc::clone(&runtime), config, secrets).unwrap();
         let identity = application
             .authenticate_management_key(&seed_key, "narrowing-test".to_owned())
+            .await
             .unwrap();
 
         let (_, mut etag) = load_membership(store.pool(), organization_id, user_id)

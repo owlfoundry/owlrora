@@ -654,6 +654,33 @@ textarea:hover {
 .schema-field:has(textarea) {
   grid-column: span 2;
 }
+.schema-field:has(.domain-field) {
+  grid-column: 1 / -1;
+}
+.domain-field {
+  min-width: 0;
+  border: 0;
+  padding: 0;
+}
+.domain-field > fieldset {
+  min-width: 0;
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.domain-field select {
+  max-width: 100%;
+}
+.workflow-help {
+  margin: 16px 0 24px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.workflow-help li {
+  margin: 8px 0;
+}
 .field-presence {
   margin-bottom: 4px;
   color: var(--secondary);

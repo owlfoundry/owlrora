@@ -288,7 +288,7 @@ The server loads no untrusted native or WebAssembly provider plugin code.
 
 `GET /health` is cheap liveness and reveals only stable alive status.
 
-`GET /ready` succeeds when:
+Every non-health-only profile exposes coarse `GET /ready`. It reads the coherent published generation and confirmation evidence without synchronous per-probe PostgreSQL/Redis calls. It succeeds when:
 
 - a valid runtime snapshot is loaded within security-age bounds;
 - database schema compatibility is established;
@@ -322,6 +322,10 @@ Shutdown:
 4. return allowance/release strict leases and settle known state where possible;
 5. flush aggregate/telemetry buffers under deadlines;
 6. terminate without waiting forever on dependencies.
+
+The request drain deadline starts at drain initiation and covers pre-header work and ordinary HTTP bodies, including transport backpressure. Only already committed SSE and upgraded WebSocket work use the separate stream deadline. Existing WebSockets MUST NOT admit new turns after drain starts. Connection tasks, body pumps, and upgrades are owned and terminated/joined before final usage flush; stopping a listener alone is insufficient.
+
+`OWLRORA_SHUTDOWN_REQUEST_TIMEOUT_SECONDS`, `OWLRORA_SHUTDOWN_STREAM_TIMEOUT_SECONDS`, and `OWLRORA_SHUTDOWN_WORKER_TIMEOUT_SECONDS` configure these bounds (15/30/10 seconds by default). Telemetry export shuts down last under a bounded per-signal wait. A flush timeout reports unconfirmed facts separately from confirmed persistence and known drops.
 
 Forced shutdown may lose bounded approximate accounting and telemetry state; this is visible by design.
 

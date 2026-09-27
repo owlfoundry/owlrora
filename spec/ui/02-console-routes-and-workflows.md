@@ -353,11 +353,15 @@ For organization BYOK:
 2. The actor selects a read-only system endpoint granted to the organization; there is no organization endpoint URL/network editor.
 3. The actor creates a same-organization deployment binding that credential, endpoint, adapter-approved transport, upstream model, and compatible pricing/unpriced state.
 4. Validation checks credential/endpoint/transport/model without exposing provider errors or secret material.
-5. Route create explicitly selects one eligible active member as `owner_user_id`, including when the actor is a Management-key/system-administrator principal; no creator is fabricated as owner. The actor then creates/edits the route using same-organization deployments and/or granted system deployments with a complete target set and `If-Match`.
-6. Ownership transfer uses the dedicated `.../actions/transfer-ownership` command, current route ETag, and one eligible active-member destination; it is not an ordinary editable field.
+5. Create or edit the organization-owned route using same-organization deployments and/or granted system deployments, a complete target set, and `If-Match` for edits. Do not require a human owner; creator attribution never controls route availability.
+6. Show organization ownership and immutable creator audit attribution. Membership changes do not require route reassignment.
 7. Publish/activation preserves stable targets, audit, tenant qualification, and fail-closed grant behavior.
 
 The UI keeps credential, endpoint, deployment, and route distinct; it never introduces a provider connection or calls a route key an alias. Creator departure does not disable organization BYOK resources.
+
+Dependency selectors use named resources with stable IDs and explicit pagination. Organization route selectors merge same-organization deployments with system discovery, visibly disabling ungranted or incompatible candidates. Discovery is not a grant. Native transport choices derive from the server's generated compatibility registry, not a separately maintained browser table. Route targets have structured priority, weight, enabled, narrowing and timeout controls; edits preserve target IDs and send a complete target set. Optional fields retain omitted/null/value semantics. Advanced provider-specific objects may retain explicit JSON controls.
+
+The console guides the operator through making a model callable, granting organization/key access, and diagnosing denial. Deployment detail exposes the existing server validation action; create/update graph validation remains transactional and authoritative, and safe errors are displayed without treating a valid graph as a live-provider health guarantee. Grant editors show named checkboxes, preserve selections outside loaded pages, and distinguish invocation grants from composition grants.
 
 ### 8.7 Create or rotate a gateway API key
 

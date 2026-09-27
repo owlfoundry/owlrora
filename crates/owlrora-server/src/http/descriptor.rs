@@ -94,6 +94,7 @@ pub struct CheckedOperationContract {
     pub client_generated_idempotency_key: bool,
     pub secret_input: Option<OperationSecretInput>,
     pub one_time_secret_response: bool,
+    pub one_time_result_field: Option<&'static str>,
     pub sensitive_result: bool,
     pub high_impact: bool,
     pub destructive: bool,
@@ -203,6 +204,11 @@ impl OperationDescriptor {
             client_generated_idempotency_key,
             secret_input,
             one_time_secret_response: self.one_time_secret_response,
+            one_time_result_field: self.one_time_secret_response.then_some(match self.id {
+                "organization.invitations.create" | "organization.invitations.resend" => "token",
+                "system.upstream_credentials.codex_login.start" => "user_code",
+                _ => "key",
+            }),
             sensitive_result,
             high_impact,
             destructive,
@@ -1342,7 +1348,6 @@ fn operation_request_schema(id: &str) -> Option<serde_json::Value> {
         }
         "system.model_routes.create" | "organization.model_routes.create" => object_schema(
             json!({
-                "owner_user_id":{"type":["string","null"]},
                 "model_key":{"type":"string","minLength":1,"maxLength":512},
                 "ingress_protocol_family":{"type":"string","enum":["anthropic_messages","openai_chat_completions","openai_responses","google_gemini"]},
                 "required_base_capabilities":string_array(),
@@ -1372,10 +1377,6 @@ fn operation_request_schema(id: &str) -> Option<serde_json::Value> {
                 "targets":route_targets_schema()
             }))
         }
-        "organization.model_routes.transfer_ownership" => object_schema(
-            json!({"owner_user_id":{"type":"string","format":"uuid"}}),
-            &["owner_user_id"],
-        ),
         "organization.system_route_grants.update" => object_schema(
             json!({
                 "resource_ids":catalog_grant_resource_ids_schema(),
@@ -2229,13 +2230,6 @@ pub const MODULE_I_OPERATIONS: &[OperationDescriptor] = &[
         etag
     ),
     operation!(
-        "organization.model_routes.transfer_ownership",
-        "POST",
-        "/api/v1/organizations/{organization_id}/model-routes/{id}/actions/transfer-ownership",
-        Management,
-        etag
-    ),
-    operation!(
         "organization.available_routes.list",
         "GET",
         "/api/v1/organizations/{organization_id}/available-routes",
@@ -3043,7 +3037,6 @@ mod tests {
             "system.model_routes.update",
             "organization.model_routes.create",
             "organization.model_routes.update",
-            "organization.model_routes.transfer_ownership",
             "organization.system_route_grants.update",
             "organization.endpoint_grants.update",
             "organization.deployment_grants.update",

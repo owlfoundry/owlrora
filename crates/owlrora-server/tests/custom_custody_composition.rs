@@ -52,6 +52,8 @@ impl ConfigurationSecretOpener for IndependentCustody {
 fn independent_crate_can_configure_public_server_builder_without_private_modules() {
     let config = Arc::new(ServerConfig {
         address: "127.0.0.1:0".parse().unwrap(),
+        otlp_endpoint: None,
+        trace_sample_ratio: 0.1,
         profile: owlrora_server::config::DeploymentProfile::HealthOnly,
         database_url: None,
         public_origin: None,
@@ -67,6 +69,10 @@ fn independent_crate_can_configure_public_server_builder_without_private_modules
         policy_retirement_grace: std::time::Duration::from_mins(1),
         session_lifetime: std::time::Duration::from_hours(1),
         max_security_snapshot_age: std::time::Duration::from_secs(30),
+        required_route_ids: Vec::new(),
+        shutdown_request_timeout: std::time::Duration::from_secs(15),
+        shutdown_stream_timeout: std::time::Duration::from_secs(30),
+        shutdown_worker_timeout: std::time::Duration::from_secs(10),
         usage_flush_interval: std::time::Duration::from_secs(5),
         usage_max_aggregate_keys: 4096,
         usage_max_pending_batches: 16,

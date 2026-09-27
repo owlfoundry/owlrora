@@ -86,4 +86,4 @@ PostgreSQL is not consulted on the normal request path after generation capture,
 
 OwlRora is not an identity provider, billing ledger, prompt manager, agent framework, semantic cache, vector database, model-training platform, or arbitrary reverse-proxy plugin host. OwlAuth may be integrated as an optional adapter, but OwlRora does not require it.
 
-See [Implementation status](/reference/implementation-status) for target work that remains, including standard OpenTelemetry export and several production-lifecycle closure items.
+See [Implementation status](/reference/implementation-status) for target work that remains, including the full telemetry signal inventory, automated disaster recovery, and target-scale benchmark evidence.

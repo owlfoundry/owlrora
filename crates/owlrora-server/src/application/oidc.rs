@@ -60,7 +60,7 @@ impl Application {
     pub async fn list_browser_login_issuers(
         &self,
     ) -> Result<Vec<BrowserLoginIssuer>, ApplicationError> {
-        let generation = self.security_generation()?;
+        let generation = self.security_generation().await?;
         let rows = sqlx::query(
             "SELECT id, name, display_name, browser_login
              FROM external_identity_issuers
@@ -129,7 +129,7 @@ impl Application {
             .clone()
             .try_acquire_owned()
             .map_err(|_| ApplicationError::RateLimited)?;
-        let generation = self.security_generation()?;
+        let generation = self.security_generation().await?;
         let issuer = generation
             .snapshot
             .identity
@@ -255,7 +255,7 @@ impl Application {
             .clone()
             .try_acquire_owned()
             .map_err(|_| ApplicationError::RateLimited)?;
-        let generation = self.security_generation()?;
+        let generation = self.security_generation().await?;
         let state_digest = parse_opaque_value(STATE_PREFIX, state, b"oidc-state")?;
         let transaction_digest =
             parse_opaque_value(TRANSACTION_PREFIX, transaction_token, b"oidc-transaction")?;

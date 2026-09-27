@@ -83,10 +83,16 @@ export interface ResourceState<T> {
   replace: (response: ApiResponse<T>) => void;
 }
 
-export function useIdempotencyKey(): (candidate: unknown) => string {
+export function useIdempotencyKey(): (candidate: unknown) => Promise<string> {
   const current = useRef<{ fingerprint: string; key: string } | null>(null);
-  return useCallback((candidate: unknown) => {
-    const fingerprint = JSON.stringify(candidate);
+  return useCallback(async (candidate: unknown) => {
+    // Keep only a digest in the editor session, never the secret-bearing candidate.
+    const bytes = new TextEncoder().encode(JSON.stringify(candidate));
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    bytes.fill(0);
+    const fingerprint = Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
     if (current.current === null || current.current.fingerprint !== fingerprint) {
       current.current = { fingerprint, key: createIdempotencyKey() };
     }
@@ -97,17 +103,20 @@ export function useIdempotencyKey(): (candidate: unknown) => string {
 export function useApiResource<T>(path: string): ResourceState<T> {
   const [revision, setRevision] = useState(0);
   const [state, setState] = useState<{
+    path: string;
     loading: boolean;
     value: T | null;
     etag: string | null;
     error: ApiError | null;
-  }>({ loading: true, value: null, etag: null, error: null });
+  }>({ path, loading: true, value: null, etag: null, error: null });
 
   useEffect(() => {
     const controller = new AbortController();
     void apiRequest<T>(path, { signal: controller.signal })
       .then((response) => {
+        if (controller.signal.aborted) return;
         setState({
+          path,
           loading: false,
           value: response.value,
           etag: response.etag,
@@ -119,6 +128,7 @@ export function useApiResource<T>(path: string): ResourceState<T> {
           return;
         }
         setState({
+          path,
           loading: false,
           value: null,
           etag: null,
@@ -132,18 +142,24 @@ export function useApiResource<T>(path: string): ResourceState<T> {
   }, [path, revision]);
 
   const reload = useCallback(() => {
-    setState({ loading: true, value: null, etag: null, error: null });
+    setState({ path, loading: true, value: null, etag: null, error: null });
     setRevision((value) => value + 1);
-  }, []);
-  const replace = useCallback((response: ApiResponse<T>) => {
-    setState({
-      loading: false,
-      value: response.value,
-      etag: response.etag,
-      error: null,
-    });
-  }, []);
-  return { ...state, reload, replace };
+  }, [path]);
+  const replace = useCallback(
+    (response: ApiResponse<T>) => {
+      setState({
+        path,
+        loading: false,
+        value: response.value,
+        etag: response.etag,
+        error: null,
+      });
+    },
+    [path],
+  );
+  const visible =
+    state.path === path ? state : { loading: true, value: null, etag: null, error: null };
+  return { ...visible, reload, replace };
 }
 
 export function useUnsavedChanges(active: boolean): () => void {

@@ -31,33 +31,26 @@ const SESSION_COOKIE_PREFIX: &str = "owlrora_session_v1";
 const CSRF_PREFIX: &str = "owlrora_csrf_v1";
 
 impl Application {
-    pub(crate) fn security_generation(&self) -> Result<Arc<RuntimeGeneration>, ApplicationError> {
-        let now = Utc::now();
-        let generation = self.runtime.capture();
-        let status = self.runtime.status();
-        let max_age = chrono::Duration::from_std(self.config.max_security_snapshot_age)
-            .map_err(|_| ApplicationError::Internal)?;
-        if now.signed_duration_since(status.confirmed_at) > max_age
-            || generation
-                .snapshot
-                .organizations
-                .values()
-                .filter_map(|organization| organization.pending_tightening_deadline)
-                .any(|deadline| deadline <= now)
-        {
-            return Err(ApplicationError::DependencyUnavailable);
-        }
-        Ok(generation)
+    pub(crate) async fn security_generation(
+        &self,
+    ) -> Result<Arc<RuntimeGeneration>, ApplicationError> {
+        self.runtime
+            .capture_after_refresh(
+                self.config.max_security_snapshot_age,
+                std::time::Duration::from_millis(250),
+            )
+            .await
+            .ok_or(ApplicationError::DependencyUnavailable)
     }
 
-    pub fn authenticate_management_key(
+    pub async fn authenticate_management_key(
         &self,
         raw_key: &str,
         request_id: String,
     ) -> Result<RequestIdentity, ApplicationError> {
         let material = ManagementKeyMaterial::parse(raw_key)
             .map_err(|_| ApplicationError::InvalidCredential)?;
-        let generation = self.security_generation()?;
+        let generation = self.security_generation().await?;
         let presented_seed_version = seed_admin_key_version_id(&material);
         if self
             .config
@@ -414,7 +407,7 @@ impl Application {
         csrf_token: Option<&str>,
         request_id: String,
     ) -> Result<RequestIdentity, ApplicationError> {
-        let generation = self.security_generation()?;
+        let generation = self.security_generation().await?;
         let session_digest =
             parse_and_digest_token(raw_session, SESSION_COOKIE_PREFIX, b"session")?;
         let row = sqlx::query(

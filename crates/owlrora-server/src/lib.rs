@@ -40,9 +40,11 @@ pub mod config;
 pub mod domain;
 pub mod gateway;
 pub mod http;
+mod lifecycle;
 pub mod protocols;
 pub mod runtime;
 pub mod secrets;
+mod telemetry;
 
 #[cfg(test)]
 use std::net::SocketAddr;

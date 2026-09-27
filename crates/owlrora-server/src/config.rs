@@ -42,6 +42,8 @@ impl DeploymentProfile {
 #[derive(Clone)]
 pub struct ServerConfig {
     pub address: SocketAddr,
+    pub otlp_endpoint: Option<Url>,
+    pub trace_sample_ratio: f64,
     pub profile: DeploymentProfile,
     pub database_url: Option<String>,
     pub public_origin: Option<Url>,
@@ -57,6 +59,10 @@ pub struct ServerConfig {
     pub policy_retirement_grace: Duration,
     pub session_lifetime: Duration,
     pub max_security_snapshot_age: Duration,
+    pub required_route_ids: Vec<crate::domain::RouteId>,
+    pub shutdown_request_timeout: Duration,
+    pub shutdown_stream_timeout: Duration,
+    pub shutdown_worker_timeout: Duration,
     pub usage_flush_interval: Duration,
     pub usage_max_aggregate_keys: usize,
     pub usage_max_pending_batches: usize,
@@ -74,6 +80,15 @@ impl std::fmt::Debug for ServerConfig {
             .debug_struct("ServerConfig")
             .field("address", &self.address)
             .field("profile", &self.profile)
+            .field(
+                "otlp_endpoint",
+                &self.otlp_endpoint.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("trace_sample_ratio", &self.trace_sample_ratio)
+            .field("required_route_ids", &self.required_route_ids)
+            .field("shutdown_request_timeout", &self.shutdown_request_timeout)
+            .field("shutdown_stream_timeout", &self.shutdown_stream_timeout)
+            .field("shutdown_worker_timeout", &self.shutdown_worker_timeout)
             .field(
                 "database_url",
                 &self.database_url.as_ref().map(|_| "[REDACTED]"),
@@ -164,6 +179,8 @@ impl ServerConfig {
     pub fn from_values(values: &BTreeMap<String, String>) -> Result<Self, ConfigError> {
         const KNOWN: &[&str] = &[
             "OWLRORA_ADDR",
+            "OWLRORA_OTLP_ENDPOINT",
+            "OWLRORA_TRACE_SAMPLE_RATIO",
             "OWLRORA_PROFILE",
             "OWLRORA_DATABASE_URL",
             "OWLRORA_PUBLIC_ORIGIN",
@@ -178,6 +195,10 @@ impl ServerConfig {
             "OWLRORA_POLICY_ACTIVATION_TIMEOUT_SECONDS",
             "OWLRORA_POLICY_RETIREMENT_GRACE_SECONDS",
             "OWLRORA_SESSION_LIFETIME_SECONDS",
+            "OWLRORA_REQUIRED_ROUTE_IDS",
+            "OWLRORA_SHUTDOWN_REQUEST_TIMEOUT_SECONDS",
+            "OWLRORA_SHUTDOWN_STREAM_TIMEOUT_SECONDS",
+            "OWLRORA_SHUTDOWN_WORKER_TIMEOUT_SECONDS",
             "OWLRORA_MAX_SECURITY_SNAPSHOT_AGE_SECONDS",
             "OWLRORA_USAGE_FLUSH_INTERVAL_SECONDS",
             "OWLRORA_USAGE_MAX_AGGREGATE_KEYS",
@@ -194,6 +215,36 @@ impl ServerConfig {
         }
 
         let address = parse_or(values, "OWLRORA_ADDR", "127.0.0.1:8080")?;
+        let otlp_endpoint = optional(values, "OWLRORA_OTLP_ENDPOINT")
+            .map(|value| {
+                let url = Url::parse(value).map_err(|_| {
+                    invalid(
+                        "OWLRORA_OTLP_ENDPOINT",
+                        "must be an HTTP(S) collector base URL".to_owned(),
+                    )
+                })?;
+                if !matches!(url.scheme(), "http" | "https")
+                    || url.host_str().is_none()
+                    || !url.username().is_empty()
+                    || url.password().is_some()
+                    || url.query().is_some()
+                    || url.fragment().is_some()
+                {
+                    return Err(invalid(
+                        "OWLRORA_OTLP_ENDPOINT",
+                        "must be HTTP(S) without credentials, query, or fragment".to_owned(),
+                    ));
+                }
+                Ok(url)
+            })
+            .transpose()?;
+        let trace_sample_ratio: f64 = parse_or(values, "OWLRORA_TRACE_SAMPLE_RATIO", "0.1")?;
+        if !trace_sample_ratio.is_finite() || !(0.0..=1.0).contains(&trace_sample_ratio) {
+            return Err(invalid(
+                "OWLRORA_TRACE_SAMPLE_RATIO",
+                "must be finite and between 0 and 1".to_owned(),
+            ));
+        }
         let profile = match optional(values, "OWLRORA_PROFILE").unwrap_or("full") {
             "full" => DeploymentProfile::Full,
             "management" => DeploymentProfile::Management,
@@ -257,6 +308,43 @@ impl ServerConfig {
             30,
             5..=300,
         )?;
+        let required_route_ids = optional(values, "OWLRORA_REQUIRED_ROUTE_IDS")
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(|id| {
+                        id.trim()
+                            .parse::<uuid::Uuid>()
+                            .map(crate::domain::RouteId::from_uuid)
+                            .map_err(|_| {
+                                invalid(
+                                    "OWLRORA_REQUIRED_ROUTE_IDS",
+                                    "must contain exact route UUIDs".to_owned(),
+                                )
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let shutdown_request_timeout = duration(
+            values,
+            "OWLRORA_SHUTDOWN_REQUEST_TIMEOUT_SECONDS",
+            15,
+            1..=300,
+        )?;
+        let shutdown_stream_timeout = duration(
+            values,
+            "OWLRORA_SHUTDOWN_STREAM_TIMEOUT_SECONDS",
+            30,
+            1..=3600,
+        )?;
+        let shutdown_worker_timeout = duration(
+            values,
+            "OWLRORA_SHUTDOWN_WORKER_TIMEOUT_SECONDS",
+            10,
+            1..=300,
+        )?;
         let usage_flush_interval =
             duration(values, "OWLRORA_USAGE_FLUSH_INTERVAL_SECONDS", 5, 1..=300)?;
         let usage_max_aggregate_keys =
@@ -313,6 +401,8 @@ impl ServerConfig {
 
         let mut config = Self {
             address,
+            otlp_endpoint,
+            trace_sample_ratio,
             profile,
             database_url: None,
             public_origin: None,
@@ -328,6 +418,10 @@ impl ServerConfig {
             policy_retirement_grace,
             session_lifetime,
             max_security_snapshot_age,
+            required_route_ids,
+            shutdown_request_timeout,
+            shutdown_stream_timeout,
+            shutdown_worker_timeout,
             usage_flush_interval,
             usage_max_aggregate_keys,
             usage_max_pending_batches,
@@ -536,6 +630,64 @@ mod tests {
                 "redis://127.0.0.1:6379/0".to_owned(),
             ),
         ])
+    }
+
+    #[test]
+    fn telemetry_configuration_is_opt_in_and_bounded() {
+        let mut values = valid_values();
+        assert!(
+            ServerConfig::from_values(&values)
+                .unwrap()
+                .otlp_endpoint
+                .is_none()
+        );
+        for invalid_value in ["NaN", "inf", "-0.1", "1.1"] {
+            values.insert(
+                "OWLRORA_TRACE_SAMPLE_RATIO".to_owned(),
+                invalid_value.to_owned(),
+            );
+            assert!(ServerConfig::from_values(&values).is_err());
+        }
+        values.insert("OWLRORA_TRACE_SAMPLE_RATIO".to_owned(), "0".to_owned());
+        for invalid_url in [
+            "file:///tmp/collector",
+            "https://secret@example.com",
+            "https://collector.invalid/?token=secret",
+        ] {
+            values.insert("OWLRORA_OTLP_ENDPOINT".to_owned(), invalid_url.to_owned());
+            assert!(ServerConfig::from_values(&values).is_err());
+        }
+        values.insert(
+            "OWLRORA_OTLP_ENDPOINT".to_owned(),
+            "https://collector.invalid".to_owned(),
+        );
+        let config = ServerConfig::from_values(&values).unwrap();
+        assert!(!format!("{config:?}").contains("collector.invalid"));
+    }
+
+    #[test]
+    fn required_routes_and_shutdown_bounds_are_explicit() {
+        let mut values = valid_values();
+        let id = uuid::Uuid::now_v7();
+        values.insert("OWLRORA_REQUIRED_ROUTE_IDS".to_owned(), id.to_string());
+        let config = ServerConfig::from_values(&values).unwrap();
+        assert_eq!(
+            config.required_route_ids,
+            vec![crate::domain::RouteId::from_uuid(id)]
+        );
+        assert_eq!(config.shutdown_request_timeout, Duration::from_secs(15));
+        assert_eq!(config.shutdown_stream_timeout, Duration::from_secs(30));
+        values.insert(
+            "OWLRORA_REQUIRED_ROUTE_IDS".to_owned(),
+            "not-a-route".to_owned(),
+        );
+        assert!(ServerConfig::from_values(&values).is_err());
+        values.remove("OWLRORA_REQUIRED_ROUTE_IDS");
+        values.insert(
+            "OWLRORA_SHUTDOWN_STREAM_TIMEOUT_SECONDS".to_owned(),
+            "0".to_owned(),
+        );
+        assert!(ServerConfig::from_values(&values).is_err());
     }
 
     #[test]

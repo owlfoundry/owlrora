@@ -1857,7 +1857,7 @@ impl Application {
 
     pub fn start_codex_credential_workers(self: &std::sync::Arc<Self>) {
         let application = std::sync::Arc::downgrade(self);
-        tokio::spawn(async move {
+        self.lifecycle.spawn_controller(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
@@ -3901,6 +3901,7 @@ mod tests {
         };
         let identity = application
             .authenticate_management_key(&seed_key, "credential-create-idempotency-test".to_owned())
+            .await
             .unwrap();
         let name = format!("create-idempotency-test-{}", Uuid::now_v7());
         let input = CreateUpstreamCredential {
@@ -3977,6 +3978,7 @@ mod tests {
         };
         let identity = application
             .authenticate_management_key(&seed_key, "credential-replace-test".to_owned())
+            .await
             .unwrap();
         let IdempotentCommand::Executed((created, _)) = application
             .create_upstream_credential(

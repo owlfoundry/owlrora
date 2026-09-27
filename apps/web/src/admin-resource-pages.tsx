@@ -242,7 +242,7 @@ export function UserCreatePage() {
     try {
       const response = await apiRequest<User>("/api/v1/system/users/actions/create", {
         method: "POST",
-        idempotencyKey: idempotencyKeyFor(body),
+        idempotencyKey: await idempotencyKeyFor(body),
         body,
       });
       discardChanges();
@@ -532,7 +532,7 @@ export function AdminOrganizationCreatePage() {
         "/api/v1/system/organizations/actions/create",
         {
           method: "POST",
-          idempotencyKey: idempotencyKeyFor(body),
+          idempotencyKey: await idempotencyKeyFor(body),
           body,
         },
       );

@@ -31,6 +31,15 @@ export interface FieldState {
 
 export type FieldStates = Record<string, FieldState>;
 
+export interface CommandControlProps {
+  name: string;
+  schema: JsonSchema;
+  state: FieldState;
+  states: FieldStates;
+  disabled: boolean;
+  onChange: (state: FieldState) => void;
+}
+
 export interface SchemaCommandFormProps {
   operationId: string;
   params: Record<string, string>;
@@ -42,6 +51,8 @@ export interface SchemaCommandFormProps {
   secretLabel?: string;
   description?: ReactNode;
   onSuccess?: (response: JsonValue) => void;
+  renderControl?: (props: CommandControlProps) => ReactNode | undefined;
+  validateCandidate?: (candidate: Record<string, JsonValue>) => void;
 }
 
 export function commandIsNonRepeatable(
@@ -249,9 +260,14 @@ export function candidateFromStates(
   return candidate;
 }
 
-export function secretResult(value: JsonValue): { secret: string; metadata: JsonValue } | null {
+export function secretResult(
+  value: JsonValue,
+  requiredField?: string,
+): { secret: string; metadata: JsonValue } | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
-  for (const field of ["key", "token", "secret", "client_secret", "user_code"]) {
+  for (const field of requiredField === undefined
+    ? ["key", "token", "secret", "client_secret", "user_code"]
+    : [requiredField]) {
     const candidate = value[field];
     if (typeof candidate !== "string" || candidate.length === 0) continue;
     const metadata = { ...value };
@@ -274,6 +290,8 @@ function SchemaField({
   secret,
   presenceLabel,
   onChange,
+  states,
+  renderControl,
 }: {
   parent: JsonSchema;
   name: string;
@@ -282,6 +300,8 @@ function SchemaField({
   secret: boolean;
   presenceLabel: string;
   onChange: (state: FieldState) => void;
+  states: FieldStates;
+  renderControl?: SchemaCommandFormProps["renderControl"];
 }) {
   const required = isRequired(parent, name);
   const types = schemaTypes(schema);
@@ -354,6 +374,14 @@ function SchemaField({
       />
     );
   }
+  const customControl = renderControl?.({
+    name,
+    schema,
+    state,
+    states,
+    disabled: inputDisabled,
+    onChange,
+  });
   return (
     <div className="schema-field">
       {!required ? (
@@ -366,19 +394,29 @@ function SchemaField({
           <span>{presenceLabel}</span>
         </label>
       ) : null}
-      <Field
-        label={humanize(name)}
-        required={required}
-        help={
-          secret
-            ? "Write-only value. OwlRora never returns the submitted secret."
-            : types.includes("object") || types.includes("array")
-              ? "Enter bounded JSON matching the operation contract."
-              : undefined
-        }
-      >
-        {control}
-      </Field>
+      {customControl !== undefined ? (
+        <fieldset disabled={inputDisabled} className="domain-field">
+          <legend>
+            {humanize(name)}
+            {required ? " *" : ""}
+          </legend>
+          {customControl}
+        </fieldset>
+      ) : (
+        <Field
+          label={humanize(name)}
+          required={required}
+          help={
+            secret
+              ? "Write-only value. OwlRora never returns the submitted secret."
+              : types.includes("object") || types.includes("array")
+                ? "Enter bounded JSON matching the operation contract."
+                : undefined
+          }
+        >
+          {control}
+        </Field>
+      )}
       {state.enabled && isNullable(schema) && schema.enum === undefined ? (
         <label className="check-row">
           <input
@@ -393,7 +431,16 @@ function SchemaField({
   );
 }
 
-export function SchemaCommandForm({
+export function SchemaCommandForm(props: SchemaCommandFormProps) {
+  const identity = JSON.stringify([
+    props.operationId,
+    operationPath(props.operationId, props.params),
+    props.etag,
+  ]);
+  return <SchemaCommandSession key={identity} {...props} />;
+}
+
+function SchemaCommandSession({
   operationId,
   params,
   etag,
@@ -404,11 +451,13 @@ export function SchemaCommandForm({
   secretLabel = "One-time secret",
   description,
   onSuccess,
+  renderControl,
+  validateCandidate,
 }: SchemaCommandFormProps) {
   const operation = operationAuthority(operationId);
   const schema = operation?.request_schema ?? { type: "object", properties: {}, required: [] };
   const path = operationPath(operationId, params);
-  const baselineStates = initialStates(schema, initialValue);
+  const [baselineStates] = useState(() => initialStates(schema, initialValue));
   const [states, setStates] = useState<FieldStates>(() => baselineStates);
   const effectiveSchema = resolveSchemaVariant(schema, states);
   const [submitting, setSubmitting] = useState(false);
@@ -494,9 +543,16 @@ export function SchemaCommandForm({
     let candidate: Record<string, JsonValue>;
     try {
       candidate = candidateFromStates(effectiveSchema, states);
+      validateCandidate?.(candidate);
     } catch (caught: unknown) {
       setFormError(caught instanceof Error ? caught.message : "Review the form values.");
       return;
+    }
+    if (secretField !== undefined) {
+      setStates((current) => ({
+        ...current,
+        [secretField]: { ...current[secretField], text: "", checked: false },
+      }));
     }
     setSubmitting(true);
     try {
@@ -506,11 +562,19 @@ export function SchemaCommandForm({
         ifMatch: command.etag_precondition ? (etag ?? undefined) : undefined,
         idempotencyKey:
           command.idempotency === "supported" || command.client_generated_idempotency_key
-            ? idempotencyKey(candidate)
+            ? await idempotencyKey(candidate)
             : undefined,
         nonRepeatable: commandIsNonRepeatable(command),
       });
-      const oneTime = command.one_time_secret_response ? secretResult(response.value) : null;
+      const oneTime = command.one_time_secret_response
+        ? secretResult(response.value, command.one_time_result_field ?? undefined)
+        : null;
+      if (command.one_time_secret_response && oneTime === null) {
+        throw new OutcomeUnknownError(
+          response.requestId ?? "unavailable",
+          response.commandStatus !== null,
+        );
+      }
       if (oneTime !== null) {
         setRevealed(oneTime);
         setStates(initialStates(schema, undefined));
@@ -524,7 +588,9 @@ export function SchemaCommandForm({
         setStates(initialStates(schema, undefined));
         setOutcomeUnknown(caught);
       } else if (caught instanceof ApiError && caught.status === 412) {
-        setConflict(candidate);
+        const safeCandidate = { ...candidate };
+        if (secretField !== undefined) delete safeCandidate[secretField];
+        setConflict(safeCandidate);
       } else {
         setError(
           caught instanceof ApiError
@@ -552,6 +618,8 @@ export function SchemaCommandForm({
             <SchemaField
               key={name}
               parent={effectiveSchema}
+              states={states}
+              renderControl={renderControl}
               name={name}
               schema={property}
               state={states[name]}

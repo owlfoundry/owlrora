@@ -28,6 +28,8 @@ import {
   useApiResource,
 } from "./ui";
 
+import { CatalogCommandForm, CatalogWorkflow } from "./catalog-editor";
+
 export type CatalogScope = "system" | "organization";
 
 interface CatalogFamily {
@@ -272,6 +274,7 @@ export function CatalogResourceListPage({
           ) : undefined
         }
       />
+      <CatalogWorkflow organizationId={organizationId} />
       {items.length === 0 ? (
         <EmptyState
           title={`No ${definition.label.toLowerCase()}`}
@@ -334,12 +337,16 @@ export function CatalogResourceCreatePage({
         title={`Create ${definition.idLabel.toLowerCase()}`}
         description={definition.description}
       />
+      <CatalogWorkflow organizationId={organizationId} />
       <Panel title="Resource definition">
-        <SchemaCommandForm
+        <CatalogCommandForm
           operationId={operationId}
           params={apiParams(operationId, organizationId)}
           cancelHref={base}
-          successHref={base}
+          successHref={(response) => {
+            const id = resourceId(response);
+            return id === null ? base : `${base}/${encodeURIComponent(id)}`;
+          }}
           submitLabel={`Create ${definition.idLabel.toLowerCase()}`}
           secretLabel={definition.idLabel}
         />
@@ -468,23 +475,6 @@ export function CatalogResourceDetailPage({
           />
         </Panel>
       ) : null}
-      {scope === "organization" &&
-      family === "model-routes" &&
-      operationAllows(me, "organization.model_routes.transfer_ownership", organizationId) ? (
-        <Panel
-          title="Transfer route ownership"
-          description="Assign this organization route to an active same-organization local user."
-        >
-          <SchemaCommandForm
-            operationId="organization.model_routes.transfer_ownership"
-            params={apiParams("organization.model_routes.transfer_ownership", organizationId, id)}
-            etag={resource.etag}
-            cancelHref={`${base}/${encodeURIComponent(id)}`}
-            successHref={`${base}/${encodeURIComponent(id)}`}
-            submitLabel="Transfer ownership"
-          />
-        </Panel>
-      ) : null}
       {scope === "system" &&
       family === "credentials" &&
       details.credential_kind === "oauth_openai_codex" &&
@@ -543,7 +533,7 @@ export function CatalogResourceEditPage({
         description="Only selected fields are sent. Unselected fields preserve their current authoritative value."
       />
       <Panel title="Changes">
-        <SchemaCommandForm
+        <CatalogCommandForm
           operationId={updateOperation}
           params={apiParams(updateOperation, organizationId, id)}
           etag={resource.etag}

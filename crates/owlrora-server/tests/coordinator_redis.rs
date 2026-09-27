@@ -403,3 +403,65 @@ async fn rate_and_concurrency_use_exact_active_generation() {
         Err(CoordinatorError::Conflict)
     ));
 }
+
+#[tokio::test]
+async fn strict_concurrency_replay_preserves_remaining_lease_lifetime() {
+    let Some(coordinator) = coordinator().await else {
+        return;
+    };
+    let version_id = Uuid::now_v7();
+    let candidate = PolicyCandidate {
+        organization_id: OrganizationId::new(),
+        kind: PolicyKind::GatewayKeyRequestLimits,
+        policy_id: Uuid::now_v7(),
+        desired_epoch: Uuid::now_v7().to_string(),
+        desired_version_id: version_id,
+        desired_generation: 1,
+        desired_recovery_generation: 0,
+        fence: Uuid::now_v7(),
+        config: PolicyCoordinatorConfig::RequestLimits {
+            version_id,
+            requests_per_minute: 100,
+            input_units_per_minute: None,
+            grant_mode: "local_grants".to_owned(),
+            max_request_tokens: 10,
+            grant_seconds: 10,
+            concurrency_mode: Some("strict".to_owned()),
+            concurrency_limit: Some(1),
+            lease_seconds: Some(2),
+            max_stream_seconds: 1,
+        },
+    };
+    activate(&coordinator, &candidate).await;
+    let policy = reference(&candidate);
+    let lease_id = Uuid::now_v7();
+    let started = tokio::time::Instant::now();
+    let deadline = coordinator
+        .acquire_strict_concurrency(&policy, lease_id, 2)
+        .await
+        .unwrap();
+    assert!(deadline <= tokio::time::Instant::now() + Duration::from_millis(1999));
+    assert!(deadline > started);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let replayed = coordinator
+        .acquire_strict_concurrency(&policy, lease_id, 2)
+        .await
+        .unwrap();
+    assert!(replayed < started + Duration::from_millis(2100));
+    assert!(replayed < tokio::time::Instant::now() + Duration::from_millis(1900));
+    assert!(matches!(
+        coordinator
+            .acquire_strict_concurrency(&policy, Uuid::now_v7(), 2)
+            .await,
+        Err(CoordinatorError::Denied)
+    ));
+    coordinator
+        .release_strict_concurrency(&policy, lease_id)
+        .await
+        .unwrap();
+    let next = coordinator
+        .acquire_strict_concurrency(&policy, Uuid::now_v7(), 2)
+        .await
+        .unwrap();
+    assert!(next > replayed);
+}

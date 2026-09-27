@@ -204,6 +204,8 @@ One atomically replaceable `RuntimeGeneration` contains:
 
 A candidate publication builds both outside the request path and performs one root-pointer swap only when every required reference is coherent. Immediately after bounded transport parsing, a request captures one generation and uses it for authentication, authorization, origin resolution, target selection, and matching client dispatch. That generation remains valid for its lifetime even if a new credential version publishes. There is no interval in which a request authenticates under one generation or a new catalog selects an old or missing client registry.
 
+The publication owner stores the generation and its security-revision observation in one atomic state. Configuration revision orders durable changes; runtime build identity identifies a particular reconstruction and may advance without a configuration change. Management and Gateway use the same authority capture, while consumption admission owns policy-specific availability. Background and explicit reconciliation serialize through the same owner and may repair unavailable clients at the same revision under a fresh security fence.
+
 Secret opening and secret-source I/O occur only during generation build/refresh. Plaintext never enters snapshot debug output or configuration journal.
 
 ## 8. Background workers

@@ -111,6 +111,7 @@ fn check_optional_window(
 
 #[derive(Clone)]
 pub struct Application {
+    pub(crate) lifecycle: Arc<crate::lifecycle::Lifecycle>,
     pub(crate) store: PgStore,
     pub(crate) runtime: Arc<RuntimePublisher>,
     pub(crate) config: Arc<ServerConfig>,
@@ -179,6 +180,7 @@ impl Application {
             config.gateway_deployment_max_in_flight,
         ));
         Ok(Self {
+            lifecycle: Arc::new(crate::lifecycle::Lifecycle::default()),
             store,
             runtime,
             config,
@@ -223,13 +225,19 @@ impl Application {
     }
 
     pub async fn shutdown_gateway_workers(&self) {
+        self.lifecycle.begin_drain();
+        self.lifecycle.stop_controllers().await;
         if let Some(target_probes) = &self.target_probes {
             target_probes.shutdown().await;
         }
-        self.gateway_admission
-            .shutdown(self.coordinator.as_ref())
-            .await;
-        self.usage.shutdown().await;
+        tokio::join!(
+            self.gateway_admission.shutdown_bounded(
+                self.coordinator.as_ref(),
+                self.config.shutdown_worker_timeout
+            ),
+            self.usage
+                .shutdown_bounded(self.config.shutdown_worker_timeout),
+        );
     }
 
     #[must_use]

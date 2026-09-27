@@ -133,6 +133,7 @@ impl TargetProbeWorker {
     pub(crate) async fn shutdown(&self) {
         let _ = self.shutdown.send(true);
         if let Some(task) = self.task.lock().await.take() {
+            task.abort();
             let _ = task.await;
         }
     }

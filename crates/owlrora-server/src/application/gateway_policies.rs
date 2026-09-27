@@ -2215,7 +2215,7 @@ impl Application {
             return;
         }
         let application = Arc::clone(self);
-        tokio::spawn(async move {
+        self.lifecycle.spawn_controller(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(250));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {

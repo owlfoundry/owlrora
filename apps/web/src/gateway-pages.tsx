@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { formatDate, type CurrentPrincipal, type JsonValue, type Page } from "./api";
 import { operationAllows, operationAuthority, operationPath } from "./operation-authority";
+import { CatalogCommandForm } from "./catalog-editor";
 import { SchemaCommandForm } from "./schema-form";
 import {
   ApiErrorState,
@@ -512,7 +513,7 @@ function GrantPanel({
   return (
     <Panel title={title}>
       <JsonBlock value={value.value} />
-      <SchemaCommandForm
+      <CatalogCommandForm
         operationId={updateOperation}
         params={{ organization_id: organizationId }}
         etag={value.etag}

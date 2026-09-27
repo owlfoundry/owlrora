@@ -716,18 +716,16 @@ pub mod test_support {
         .unwrap();
         sqlx::query(
             "INSERT INTO model_routes(
-                id,resource_scope_kind,organization_id,owner_user_id,owner_membership_id,
+                id,resource_scope_kind,organization_id,
                 model_key,ingress_protocol_family,required_base_capabilities,selection_policy,
                 reliability_policy_id,request_policy,status,created_by_principal,etag_token
              ) VALUES (
-                $1,'organization',$2,$3,$4,'model','openai_responses','[]','{}',$5,'{}',
-                'draft','{}',$6
+                $1,'organization',$2,'model','openai_responses','[]','{}',$3,'{}',
+                'draft','{}',$4
              )",
         )
         .bind(Uuid::now_v7())
         .bind(organization_id)
-        .bind(user_id)
-        .bind(membership_id)
         .bind(reliability_id)
         .bind(Uuid::now_v7())
         .execute(&mut *transaction)
@@ -860,16 +858,14 @@ pub mod test_support {
         let route_id = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO model_routes(
-                id,resource_scope_kind,organization_id,owner_user_id,owner_membership_id,
+                id,resource_scope_kind,organization_id,
                 model_key,ingress_protocol_family,required_base_capabilities,selection_policy,
                 reliability_policy_id,request_policy,status,created_by_principal,etag_token
-             ) VALUES ($1,'organization',$2,$3,$4,'grant-model','openai_responses',
-                '[]','{}',$5,'{}','draft','{}',$6)",
+             ) VALUES ($1,'organization',$2,'grant-model','openai_responses',
+                '[]','{}',$3,'{}','draft','{}',$4)",
         )
         .bind(route_id)
         .bind(organization_id)
-        .bind(user_id)
-        .bind(membership_id)
         .bind(reliability_id)
         .bind(Uuid::now_v7())
         .execute(&mut *transaction)
@@ -1217,16 +1213,14 @@ pub mod test_support {
         let route_id = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO model_routes(
-                id,resource_scope_kind,organization_id,owner_user_id,owner_membership_id,
+                id,resource_scope_kind,organization_id,
                 model_key,ingress_protocol_family,required_base_capabilities,selection_policy,
                 reliability_policy_id,request_policy,status,created_by_principal,etag_token
-             ) VALUES ($1,'organization',$2,$3,$4,'usage-model','openai_responses',
-                '[]','{}',$5,'{}','draft','{}',$6)",
+             ) VALUES ($1,'organization',$2,'usage-model','openai_responses',
+                '[]','{}',$3,'{}','draft','{}',$4)",
         )
         .bind(route_id)
         .bind(organization_a)
-        .bind(user_id)
-        .bind(membership_id)
         .bind(reliability_id)
         .bind(Uuid::now_v7())
         .execute(&mut *transaction)

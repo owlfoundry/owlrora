@@ -495,18 +495,38 @@ fn parse_success_body(
     status: StatusCode,
     committed: bool,
 ) -> Result<Value, ClientError> {
-    if bytes.is_empty() {
-        return Ok(Value::Null);
-    }
-    serde_json::from_slice(bytes).map_err(|_| {
-        response_unavailable_error(
+    let body = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(bytes).map_err(|_| {
+            response_unavailable_error(
+                operation,
+                status,
+                committed,
+                "success response contained incomplete or invalid JSON",
+                ClientError::InvalidSuccessResponse,
+            )
+        })?
+    };
+    if operation.one_time_secret_response
+        && !operation
+            .one_time_result_field
+            .as_ref()
+            .is_some_and(|field| {
+                body.get(field)
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty())
+            })
+    {
+        return Err(response_unavailable_error(
             operation,
             status,
             committed,
-            "success response contained incomplete or invalid JSON",
+            "success response omitted the required one-time material",
             ClientError::InvalidSuccessResponse,
-        )
-    })
+        ));
+    }
+    Ok(body)
 }
 
 fn response_unavailable_error(
@@ -643,6 +663,40 @@ mod tests {
         let candidate = value["candidate"].clone();
         assert_eq!(candidate, json!({"status":"disabled"}));
         assert_eq!(value["etag"], "\"opaque\"");
+    }
+
+    #[test]
+    fn missing_one_time_material_is_never_a_success() {
+        for operation in crate::contract::operations()
+            .iter()
+            .filter(|operation| operation.one_time_secret_response)
+        {
+            for body in [
+                b"".as_slice(),
+                b"null",
+                b"{}",
+                b"{\"key\":\"\"}",
+                b"{\"token\":42}",
+            ] {
+                for committed in [false, true] {
+                    let error =
+                        parse_success_body(body, operation, StatusCode::OK, committed).unwrap_err();
+                    assert!(matches!(error, ClientError::CommandOutcomeUnknown { .. }));
+                    assert!(error.to_string().contains("disable or revoke"));
+                }
+            }
+            let field = operation.one_time_result_field.as_ref().unwrap();
+            let body = serde_json::to_vec(&json!({field: "delivered-once"})).unwrap();
+            assert!(parse_success_body(&body, operation, StatusCode::OK, true).is_ok());
+        }
+        let query = crate::contract::operations()
+            .iter()
+            .find(|operation| operation.mode == OperationMode::Query)
+            .unwrap();
+        assert_eq!(
+            parse_success_body(b"", query, StatusCode::NO_CONTENT, false).unwrap(),
+            Value::Null
+        );
     }
 
     #[test]

@@ -13,7 +13,7 @@ use crate::{
         EndpointId, IngressProtocolFamily, LlmFeatureCapability, ManagementScope, OrganizationId,
         PricingPolicyId, PricingPolicyVersionId, ReliabilityPolicyId, ResourceScope, RouteId,
         RouteRequestPolicy, RouteSelectionPolicy, TargetId, TargetNarrowingConstraints,
-        TargetTimeoutOverrides, TransportKind, UserId, compatibility,
+        TargetTimeoutOverrides, TransportKind, compatibility,
     },
 };
 
@@ -22,8 +22,8 @@ use super::{
     CreateModelRoute, CreatePricingPolicy, EntityTag, IdempotencyDecision, IdempotentCommand,
     ModelDeployment, ModelRoute, Page, PricingPolicy, PricingPolicyVersion,
     PublishPricingPolicyVersion, PublishedPricingPolicyVersion, RequestIdentity, RouteStatus,
-    RouteTarget, RouteTargetInput, TransferModelRouteOwnership, UpdateField, UpdateModelDeployment,
-    UpdateModelRoute, UpdatePricingPolicy, ValidatedCatalogStatus,
+    RouteTarget, RouteTargetInput, UpdateField, UpdateModelDeployment, UpdateModelRoute,
+    UpdatePricingPolicy, ValidatedCatalogStatus,
 };
 
 impl Application {
@@ -361,6 +361,7 @@ impl Application {
     ) -> Result<IdempotentCommand<(ModelDeployment, EntityTag)>, ApplicationError> {
         authorize_deployment(self, identity, &scope, true)?;
         validate_deployment_input(&input)?;
+        validate_state_isolation(&input.state_isolation_profile, &scope)?;
         let operation_id = deployment_operation_id(&scope, "create");
         let mut transaction = self.store.begin().await?;
         let handle = match self
@@ -548,6 +549,7 @@ impl Application {
         apply_required(&mut unpriced, input.unpriced, "unpriced", &mut changed)?;
         apply_validated_status(&mut status, input.status, &mut changed)?;
         validate_deployment_mutable(&capabilities, &context_limits, &state_isolation)?;
+        validate_state_isolation(&state_isolation, &scope)?;
         if unpriced == pricing_id.is_some() {
             return Err(ApplicationError::Validation(
                 "exactly one of pricing_policy_version_id or unpriced=true is required".to_owned(),
@@ -783,7 +785,6 @@ impl Application {
         };
         let id = RouteId::new();
         let (scope_kind, organization_id) = scope_columns(&scope);
-        let owner = resolve_route_owner(&mut transaction, &scope, input.owner_user_id).await?;
         validate_route_graph(
             &mut transaction,
             &scope,
@@ -796,17 +797,15 @@ impl Application {
         .await?;
         sqlx::query(
             "INSERT INTO model_routes(
-                id,resource_scope_kind,organization_id,owner_user_id,owner_membership_id,
+                id,resource_scope_kind,organization_id,
                 model_key,ingress_protocol_family,required_base_capabilities,selection_policy,
                 reliability_policy_id,request_policy,status,config_version,
                 created_by_principal,etag_token
-             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,1,$13,$14)",
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,1,$11,$12)",
         )
         .bind(id.as_uuid())
         .bind(scope_kind)
         .bind(organization_id)
-        .bind(owner.map(|owner| owner.0.as_uuid()))
-        .bind(owner.map(|owner| owner.1))
         .bind(input.model_key.trim())
         .bind(input.ingress_protocol_family.as_str())
         .bind(
@@ -841,8 +840,6 @@ impl Application {
             id.to_string(),
             operation_id,
             &[
-                "owner_user_id",
-                "owner_membership_id",
                 "model_key",
                 "ingress_protocol_family",
                 "required_base_capabilities",
@@ -985,65 +982,6 @@ impl Application {
             .await;
         Ok(result)
     }
-
-    pub async fn transfer_model_route_ownership(
-        &self,
-        identity: &RequestIdentity,
-        organization_id: OrganizationId,
-        id: RouteId,
-        if_match: Option<&str>,
-        input: TransferModelRouteOwnership,
-    ) -> Result<(ModelRoute, EntityTag), ApplicationError> {
-        let scope = ResourceScope::Organization { organization_id };
-        authorize_route(self, identity, &scope, true)?;
-        let mut transaction = self.store.begin().await?;
-        let row = sqlx::query(
-            "SELECT owner_user_id,etag_token FROM model_routes
-             WHERE organization_id=$1 AND id=$2 FOR UPDATE",
-        )
-        .bind(organization_id.as_uuid())
-        .bind(id.as_uuid())
-        .fetch_optional(&mut *transaction)
-        .await?
-        .ok_or(ApplicationError::NotFound)?;
-        require_if_match(
-            if_match,
-            &EntityTag::for_resource("model_route", id.as_uuid(), row.try_get("etag_token")?),
-        )?;
-        let (_, membership_id) =
-            active_membership(&mut transaction, organization_id, input.owner_user_id).await?;
-        sqlx::query(
-            "UPDATE model_routes SET owner_user_id=$3,owner_membership_id=$4,
-                    config_version=config_version+1,etag_token=$5,updated_at=now()
-             WHERE organization_id=$1 AND id=$2",
-        )
-        .bind(organization_id.as_uuid())
-        .bind(id.as_uuid())
-        .bind(input.owner_user_id.as_uuid())
-        .bind(membership_id)
-        .bind(Uuid::now_v7())
-        .execute(&mut *transaction)
-        .await?;
-        let result = load_route(&mut transaction, &scope, id).await?;
-        commit_catalog(
-            self,
-            transaction,
-            identity,
-            Some(organization_id),
-            "model_route",
-            id.to_string(),
-            "organization.model_routes.transfer_ownership",
-            &["owner_user_id", "owner_membership_id"],
-            false,
-        )
-        .await?;
-        self.publish_committed_runtime(
-            &identity.request_id,
-            "organization.model_routes.transfer_ownership",
-        )
-        .await;
-        Ok(result)
-    }
 }
 
 async fn load_pricing_policy(
@@ -1164,7 +1102,7 @@ pub(super) async fn load_route(
 ) -> Result<(ModelRoute, EntityTag), ApplicationError> {
     let (_, organization_id) = scope_columns(scope);
     let row = sqlx::query(
-        "SELECT id,owner_user_id,model_key,ingress_protocol_family,
+        "SELECT id,model_key,ingress_protocol_family,
                 required_base_capabilities,selection_policy,reliability_policy_id,
                 request_policy,status,config_version,etag_token,created_at,updated_at
          FROM model_routes WHERE organization_id IS NOT DISTINCT FROM $1 AND id=$2",
@@ -1190,9 +1128,6 @@ pub(super) async fn load_route(
         ModelRoute {
             id,
             resource_scope: scope.clone(),
-            owner_user_id: row
-                .try_get::<Option<Uuid>, _>("owner_user_id")?
-                .map(UserId::from_uuid),
             model_key: row.try_get("model_key")?,
             ingress_protocol_family: parse_ingress(
                 &row.try_get::<String, _>("ingress_protocol_family")?,
@@ -1384,46 +1319,6 @@ async fn validate_route_graph(
     Ok(())
 }
 
-async fn resolve_route_owner(
-    transaction: &mut Transaction<'_, Postgres>,
-    scope: &ResourceScope,
-    owner_user_id: Option<UserId>,
-) -> Result<Option<(UserId, Uuid)>, ApplicationError> {
-    match (scope, owner_user_id) {
-        (ResourceScope::Deployment, None) => Ok(None),
-        (ResourceScope::Deployment, Some(_)) => Err(ApplicationError::Validation(
-            "system routes cannot have an owner_user_id".to_owned(),
-        )),
-        (ResourceScope::Organization { organization_id }, Some(user_id)) => {
-            active_membership(transaction, *organization_id, user_id)
-                .await
-                .map(Some)
-        }
-        (ResourceScope::Organization { .. }, None) => Err(ApplicationError::Validation(
-            "organization routes require an explicit active owner_user_id".to_owned(),
-        )),
-    }
-}
-
-async fn active_membership(
-    transaction: &mut Transaction<'_, Postgres>,
-    organization_id: OrganizationId,
-    user_id: UserId,
-) -> Result<(UserId, Uuid), ApplicationError> {
-    let membership_id = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM memberships
-         WHERE organization_id=$1 AND user_id=$2 AND status='active' FOR SHARE",
-    )
-    .bind(organization_id.as_uuid())
-    .bind(user_id.as_uuid())
-    .fetch_optional(&mut **transaction)
-    .await?
-    .ok_or(ApplicationError::Validation(
-        "route owner must be an active organization member".to_owned(),
-    ))?;
-    Ok((user_id, membership_id))
-}
-
 async fn load_target_inputs(
     transaction: &mut Transaction<'_, Postgres>,
     route_id: RouteId,
@@ -1591,6 +1486,22 @@ fn validate_deployment_mutable(
     if capabilities.len() > 32 || !context_limits.is_object() || !state_isolation.is_object() {
         return Err(ApplicationError::Validation(
             "deployment capabilities must be bounded and context/state policies must be objects"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_state_isolation(value: &Value, scope: &ResourceScope) -> Result<(), ApplicationError> {
+    let profile: crate::domain::StateIsolationProfile =
+        runtime_json_value(value, "state_isolation_profile")?;
+    let catalog_scope = match scope {
+        ResourceScope::Deployment => crate::domain::CatalogScopeKind::Deployment,
+        ResourceScope::Organization { .. } => crate::domain::CatalogScopeKind::Organization,
+    };
+    if !profile.valid_for(catalog_scope) {
+        return Err(ApplicationError::Validation(
+            "dedicated state isolation requires an organization deployment and credential"
                 .to_owned(),
         ));
     }

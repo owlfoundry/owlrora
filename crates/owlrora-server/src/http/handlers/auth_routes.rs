@@ -108,7 +108,7 @@ pub async fn create_management_key_session(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let direct = authenticate_management_key_exchange(&state.application, &headers)?;
+    let direct = authenticate_management_key_exchange(&state.application, &headers).await?;
     reject_idempotency_key(&headers, &direct)?;
     let created = state
         .application

@@ -98,7 +98,7 @@ You can also paste the key into the Console login flow. Browser key exchange mus
 
 ## 5. Inspect server readiness and operations
 
-`/health` is public process liveness. For `full` and `management`, `/ready` is a public coarse signal with no detailed evidence:
+`/health` is public process liveness. For every profile except `health-only`, `/ready` is a public coarse signal with no detailed evidence:
 
 ```bash
 curl -fsS http://127.0.0.1:8080/ready

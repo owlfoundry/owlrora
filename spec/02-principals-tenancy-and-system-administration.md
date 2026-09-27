@@ -232,7 +232,7 @@ A `Membership` joins one user to one organization:
 
 A membership has active/removed lifecycle and an LLM scope ceiling. At most one active membership exists per `(organization_id, user_id)`. Every active organization retains at least one active owner; concurrent final-owner removal or demotion is rejected.
 
-A removed membership invalidates that user's tenant access and disables admission through an organization route when that user is its current explicit route owner. It does not revoke organization-owned Management/Gateway keys or BYOK credentials/deployments created by that user. Re-adding membership does not silently reactivate a disabled route.
+A removed membership invalidates that user's tenant access. Organization-owned routes, Management/Gateway keys, and BYOK credentials/deployments remain organization resources independently of their creator's membership or user lifecycle. Creation attribution is audit metadata, never runtime ownership. Explicit resource disablement, organization status, and current grants control admission.
 
 ## 8. Invitations and sessions
 

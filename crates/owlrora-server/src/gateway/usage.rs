@@ -35,7 +35,7 @@ pub(crate) enum AttemptTerminalClass {
 }
 
 impl AttemptTerminalClass {
-    const fn as_str(self) -> &'static str {
+    pub(super) const fn as_str(self) -> &'static str {
         match self {
             Self::Actual => "actual",
             Self::DefinitelyNotDispatched => "definitely_not_dispatched",
@@ -56,19 +56,25 @@ pub(crate) struct UsageStatus {
     pub active_logical_keys: usize,
     pub active_attempt_keys: usize,
     pub pending_batches: usize,
+    pub unconfirmed_logical_facts: u64,
+    pub unconfirmed_attempt_facts: u64,
     pub lost_logical_facts: u64,
     pub lost_attempt_facts: u64,
     pub last_flush_error: Option<String>,
+    pub last_retention_error: Option<&'static str>,
+    pub retained_rows_deleted: u64,
 }
 
 #[derive(Debug)]
 pub(crate) struct UsageAggregator {
+    pub(crate) telemetry: std::sync::OnceLock<Arc<crate::telemetry::Telemetry>>,
     store: PgStore,
     source_epoch: Uuid,
     config: UsageConfig,
     state: Mutex<UsageState>,
     shutdown: watch::Sender<bool>,
     task: AsyncMutex<Option<JoinHandle<()>>>,
+    flush_lock: AsyncMutex<()>,
 }
 
 #[derive(Debug, Default)]
@@ -80,6 +86,9 @@ struct UsageState {
     lost_logical_facts: u64,
     lost_attempt_facts: u64,
     last_flush_error: Option<String>,
+    last_retention_error: Option<&'static str>,
+    retained_rows_deleted: u64,
+    last_loss_warning: Option<std::time::Instant>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
@@ -190,12 +199,14 @@ impl UsageAggregator {
     pub(crate) fn new(store: PgStore, config: UsageConfig) -> Arc<Self> {
         let (shutdown, _) = watch::channel(false);
         Arc::new(Self {
+            telemetry: std::sync::OnceLock::new(),
             store,
             source_epoch: Uuid::now_v7(),
             config,
             state: Mutex::new(UsageState::default()),
             shutdown,
             task: AsyncMutex::new(None),
+            flush_lock: AsyncMutex::new(()),
         })
     }
 
@@ -211,12 +222,27 @@ impl UsageAggregator {
         }));
     }
 
-    pub(crate) async fn shutdown(&self) {
-        let _ = self.shutdown.send(true);
+    pub(crate) async fn shutdown_bounded(&self, grace: Duration) {
+        self.shutdown.send_replace(true);
         if let Some(task) = self.task.lock().await.take() {
-            let _ = task.await;
+            crate::lifecycle::join_bounded(task, grace).await;
         } else {
-            self.flush_all().await;
+            let _ = tokio::time::timeout(grace, self.flush_all()).await;
+        }
+        let status = self.status();
+        if status.pending_batches > 0
+            || status.active_logical_keys > 0
+            || status.active_attempt_keys > 0
+        {
+            tracing::warn!(
+                event_name = "usage.shutdown_unconfirmed",
+                unconfirmed_logical_facts = status.unconfirmed_logical_facts,
+                unconfirmed_attempt_facts = status.unconfirmed_attempt_facts,
+                pending_batches = status.pending_batches,
+                active_logical_keys = status.active_logical_keys,
+                active_attempt_keys = status.active_attempt_keys,
+                "usage shutdown ended with unconfirmed aggregates; bounded accounting loss is possible"
+            );
         }
     }
 
@@ -227,13 +253,39 @@ impl UsageAggregator {
                 ..UsageStatus::default()
             };
         };
+        let mut unconfirmed_logical_facts = state.logical.values().fold(0_u64, |count, delta| {
+            count.saturating_add(delta.request_count)
+        });
+        let mut unconfirmed_attempt_facts = state.attempts.values().fold(0_u64, |count, delta| {
+            count.saturating_add(delta.attempt_count)
+        });
+        for batch in &state.pending {
+            match &batch.facts {
+                UsageFacts::Logical(facts) => {
+                    for (_, delta) in facts {
+                        unconfirmed_logical_facts =
+                            unconfirmed_logical_facts.saturating_add(delta.request_count);
+                    }
+                }
+                UsageFacts::Attempts(facts) => {
+                    for (_, delta) in facts {
+                        unconfirmed_attempt_facts =
+                            unconfirmed_attempt_facts.saturating_add(delta.attempt_count);
+                    }
+                }
+            }
+        }
         UsageStatus {
+            unconfirmed_logical_facts,
+            unconfirmed_attempt_facts,
             active_logical_keys: state.logical.len(),
             active_attempt_keys: state.attempts.len(),
             pending_batches: state.pending.len(),
             lost_logical_facts: state.lost_logical_facts,
             lost_attempt_facts: state.lost_attempt_facts,
             last_flush_error: state.last_flush_error.clone(),
+            last_retention_error: state.last_retention_error,
+            retained_rows_deleted: state.retained_rows_deleted,
         }
     }
 
@@ -253,6 +305,17 @@ impl UsageAggregator {
     ) {
         let (input, output, cached) = usage_dimensions(usage);
         let (cost_nanos, unknown_cost_count) = priced_usage(usage, deployment);
+        if let Some(telemetry) = self.telemetry.get() {
+            telemetry.record(
+                "logical",
+                admission.route.ingress_protocol_family.as_str(),
+                outcome_class,
+                duration,
+                input,
+                output,
+                cost_nanos,
+            );
+        }
         let key = LogicalUsageKey {
             bucket_start: current_hour(),
             organization_id: admission.organization.id.as_uuid(),
@@ -280,10 +343,12 @@ impl UsageAggregator {
             && !seal_logical(&mut state, self.config.max_pending_batches)
         {
             state.lost_logical_facts = state.lost_logical_facts.saturating_add(1);
+            warn_usage_loss(&mut state);
             return;
         }
         if !merge_logical(state.logical.entry(key).or_default(), &delta) {
             state.lost_logical_facts = state.lost_logical_facts.saturating_add(1);
+            warn_usage_loss(&mut state);
         }
     }
 
@@ -309,6 +374,17 @@ impl UsageAggregator {
         } else {
             terminal_class
         };
+        if let Some(telemetry) = self.telemetry.get() {
+            telemetry.record(
+                "attempt",
+                admission.route.ingress_protocol_family.as_str(),
+                terminal_class,
+                duration,
+                input,
+                output,
+                actual_cost_nanos,
+            );
+        }
         let key = AttemptUsageKey {
             bucket_start: current_hour(),
             organization_id: admission.organization.id.as_uuid(),
@@ -354,19 +430,35 @@ impl UsageAggregator {
             && !seal_attempts(&mut state, self.config.max_pending_batches)
         {
             state.lost_attempt_facts = state.lost_attempt_facts.saturating_add(1);
+            warn_usage_loss(&mut state);
             return;
         }
         if !merge_attempt(state.attempts.entry(key).or_default(), &delta) {
             state.lost_attempt_facts = state.lost_attempt_facts.saturating_add(1);
+            warn_usage_loss(&mut state);
         }
     }
 
     async fn run(self: Arc<Self>, mut shutdown: watch::Receiver<bool>) {
         let mut interval = tokio::time::interval(self.config.flush_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut retention = tokio::time::interval(Duration::from_secs(60));
+        retention.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 _ = interval.tick() => self.flush_once().await,
+                _ = retention.tick() => {
+                    let result = tokio::time::timeout(Duration::from_secs(5), prune_usage(&self.store)).await;
+                    if let Ok(mut state) = self.state.lock() {
+                        if let Ok(Ok(deleted)) = result {
+                            state.retained_rows_deleted = state.retained_rows_deleted.saturating_add(deleted);
+                            state.last_retention_error = None;
+                        } else {
+                            state.last_retention_error = Some("retention_unavailable_or_timeout");
+                            tracing::warn!(event_name="usage.retention_failed", "usage retention deferred");
+                        }
+                    }
+                }
                 changed = shutdown.changed() => {
                     if changed.is_err() || *shutdown.borrow() {
                         self.flush_all().await;
@@ -404,6 +496,7 @@ impl UsageAggregator {
     }
 
     async fn flush_once(&self) {
+        let _flush = self.flush_lock.lock().await;
         let batch = {
             let Ok(mut state) = self.state.lock() else {
                 tracing::error!("usage state lock poisoned while sealing a flush batch");
@@ -420,8 +513,21 @@ impl UsageAggregator {
         let Some(batch) = batch else {
             return;
         };
-        match flush_batch(&self.store, self.source_epoch, &batch).await {
-            Ok(()) => {
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            flush_batch(&self.store, self.source_epoch, &batch),
+        )
+        .await;
+        match result {
+            Ok(Ok(FlushOutcome::FutureBucket)) => {
+                if let Ok(mut state) = self.state.lock() {
+                    state.last_flush_error =
+                        Some("aggregate_bucket_ahead_of_database_clock".to_owned());
+                }
+                // Keep the immutable batch/receipt identity until the database
+                // clock catches up; this is not replay expiry or known loss.
+            }
+            Ok(Ok(outcome)) => {
                 let Ok(mut state) = self.state.lock() else {
                     return;
                 };
@@ -431,17 +537,60 @@ impl UsageAggregator {
                     .is_some_and(|front| front.sequence == batch.sequence)
                 {
                     state.pending.pop_front();
+                    if outcome == FlushOutcome::Expired {
+                        match &batch.facts {
+                            UsageFacts::Logical(facts) => {
+                                for (_, delta) in facts {
+                                    state.lost_logical_facts = state
+                                        .lost_logical_facts
+                                        .saturating_add(delta.request_count);
+                                }
+                            }
+                            UsageFacts::Attempts(facts) => {
+                                for (_, delta) in facts {
+                                    state.lost_attempt_facts = state
+                                        .lost_attempt_facts
+                                        .saturating_add(delta.attempt_count);
+                                }
+                            }
+                        }
+                        tracing::warn!(
+                            event_name = "usage.replay_window_expired",
+                            family = batch.facts.family(),
+                            "expired aggregate batch discarded"
+                        );
+                    }
                 }
                 state.last_flush_error = None;
             }
-            Err(error) => {
-                let message = error.to_string();
+            Ok(Err(_)) | Err(_) => {
                 if let Ok(mut state) = self.state.lock() {
-                    state.last_flush_error = Some(message.clone());
+                    state.last_flush_error =
+                        Some("aggregate_store_unavailable_or_timeout".to_owned());
                 }
-                tracing::warn!(%error, sequence=batch.sequence, family=batch.facts.family(), "usage aggregate flush failed");
+                tracing::warn!(
+                    event_name = "usage.flush_failed",
+                    sequence = batch.sequence,
+                    family = batch.facts.family(),
+                    "usage aggregate flush failed"
+                );
             }
         }
+    }
+}
+
+fn warn_usage_loss(state: &mut UsageState) {
+    if state
+        .last_loss_warning
+        .is_none_or(|last| last.elapsed() >= Duration::from_secs(60))
+    {
+        state.last_loss_warning = Some(std::time::Instant::now());
+        tracing::warn!(
+            event_name = "usage.facts_dropped",
+            lost_logical_facts = state.lost_logical_facts,
+            lost_attempt_facts = state.lost_attempt_facts,
+            "aggregate capacity or numeric limit exceeded"
+        );
     }
 }
 
@@ -482,6 +631,15 @@ fn push_batch(state: &mut UsageState, facts: UsageFacts) {
 }
 
 fn merge_logical(target: &mut LogicalUsageDelta, delta: &LogicalUsageDelta) -> bool {
+    let mut candidate = target.clone();
+    if !merge_logical_checked(&mut candidate, delta) {
+        return false;
+    }
+    *target = candidate;
+    true
+}
+
+fn merge_logical_checked(target: &mut LogicalUsageDelta, delta: &LogicalUsageDelta) -> bool {
     add_u64(&mut target.request_count, delta.request_count)
         && add_numeric(&mut target.input_units, delta.input_units)
         && add_numeric(&mut target.output_units, delta.output_units)
@@ -492,6 +650,15 @@ fn merge_logical(target: &mut LogicalUsageDelta, delta: &LogicalUsageDelta) -> b
 }
 
 fn merge_attempt(target: &mut AttemptUsageDelta, delta: &AttemptUsageDelta) -> bool {
+    let mut candidate = target.clone();
+    if !merge_attempt_checked(&mut candidate, delta) {
+        return false;
+    }
+    *target = candidate;
+    true
+}
+
+fn merge_attempt_checked(target: &mut AttemptUsageDelta, delta: &AttemptUsageDelta) -> bool {
     add_u64(&mut target.attempt_count, delta.attempt_count)
         && add_numeric(&mut target.input_units, delta.input_units)
         && add_numeric(&mut target.output_units, delta.output_units)
@@ -539,6 +706,14 @@ fn add_optional_numeric(target: &mut Option<u128>, value: Option<u128>) -> bool 
         }
         None => false,
     }
+}
+
+fn day_bucket(value: DateTime<Utc>) -> DateTime<Utc> {
+    value
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .expect("UTC midnight")
+        .and_utc()
 }
 
 fn current_hour() -> DateTime<Utc> {
@@ -640,7 +815,8 @@ fn priced_usage(
     usage: Option<&ProviderUsage>,
     deployment: Option<&DeploymentSnapshot>,
 ) -> (Option<u128>, u64) {
-    let Some(usage) = usage.filter(|usage| usage.completeness != UsageCompleteness::Absent) else {
+    let Some(usage) = usage.filter(|usage| usage.completeness == UsageCompleteness::Complete)
+    else {
         return (None, 1);
     };
     let outcome = deployment.and_then(|deployment| usage.price(deployment));
@@ -662,12 +838,64 @@ const fn origin_str(origin: AccountingOrigin) -> &'static str {
     }
 }
 
+#[derive(Debug, Eq, PartialEq)]
+enum FlushOutcome {
+    Persisted,
+    Expired,
+    FutureBucket,
+}
+
+async fn prune_usage(store: &PgStore) -> Result<u64, sqlx::Error> {
+    let mut deleted = 0;
+    // Static identifiers only; each pass has bounded locks, rows, and runtime.
+    for (table, column, days) in [
+        ("logical_usage_hourly", "bucket_start", 30),
+        ("attempt_usage_hourly", "bucket_start", 30),
+        ("logical_usage_daily", "bucket_date", 366),
+        ("attempt_usage_daily", "bucket_date", 366),
+        ("aggregate_flush_receipts", "flushed_at", 8),
+    ] {
+        let sql = format!(
+            "DELETE FROM {table} WHERE ctid IN (
+            SELECT ctid FROM {table} WHERE {column} < now() - make_interval(days => $1)
+            ORDER BY {column} LIMIT 10000 FOR UPDATE SKIP LOCKED)"
+        );
+        deleted += sqlx::query(&sql)
+            .bind(days)
+            .execute(store.pool())
+            .await?
+            .rows_affected();
+    }
+    Ok(deleted)
+}
+
 async fn flush_batch(
     store: &PgStore,
     source_epoch: Uuid,
     batch: &UsageBatch,
-) -> Result<(), sqlx::Error> {
+) -> Result<FlushOutcome, sqlx::Error> {
     let mut transaction = store.pool().begin().await?;
+    let database_now: DateTime<Utc> = sqlx::query_scalar("SELECT now()")
+        .fetch_one(&mut *transaction)
+        .await?;
+    let (oldest, newest) = match &batch.facts {
+        UsageFacts::Logical(facts) => (
+            facts.iter().map(|(key, _)| key.bucket_start).min(),
+            facts.iter().map(|(key, _)| key.bucket_start).max(),
+        ),
+        UsageFacts::Attempts(facts) => (
+            facts.iter().map(|(key, _)| key.bucket_start).min(),
+            facts.iter().map(|(key, _)| key.bucket_start).max(),
+        ),
+    };
+    if oldest.is_some_and(|bucket| bucket < database_now - chrono::Duration::days(7)) {
+        transaction.rollback().await?;
+        return Ok(FlushOutcome::Expired);
+    }
+    if newest.is_some_and(|bucket| bucket > database_now) {
+        transaction.rollback().await?;
+        return Ok(FlushOutcome::FutureBucket);
+    }
     let inserted = sqlx::query_scalar::<_, i32>(
         "INSERT INTO aggregate_flush_receipts(
              id,source_epoch,batch_sequence,fact_family,batch_digest,fact_count
@@ -705,29 +933,33 @@ async fn flush_batch(
             ));
         }
         transaction.rollback().await?;
-        return Ok(());
+        return Ok(FlushOutcome::Persisted);
     }
     match &batch.facts {
         UsageFacts::Logical(facts) => {
             for (key, delta) in facts {
-                upsert_logical(&mut transaction, key, delta).await?;
+                upsert_logical(&mut transaction, key, delta, false).await?;
+                upsert_logical(&mut transaction, key, delta, true).await?;
             }
         }
         UsageFacts::Attempts(facts) => {
             for (key, delta) in facts {
-                upsert_attempt(&mut transaction, key, delta).await?;
+                upsert_attempt(&mut transaction, key, delta, false).await?;
+                upsert_attempt(&mut transaction, key, delta, true).await?;
             }
         }
     }
-    transaction.commit().await
+    transaction.commit().await?;
+    Ok(FlushOutcome::Persisted)
 }
 
 async fn upsert_logical(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     key: &LogicalUsageKey,
     delta: &LogicalUsageDelta,
+    daily: bool,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query(
+    let sql =
         "INSERT INTO logical_usage_hourly(
              bucket_start,organization_id,principal_kind,gateway_api_key_id,user_id,membership_id,
              route_id,route_grant_identity_id,ingress_protocol_family,outcome_class,request_count,
@@ -744,27 +976,37 @@ async fn upsert_logical(
                  ELSE COALESCE(logical_usage_hourly.cost_nanos,0)+COALESCE(EXCLUDED.cost_nanos,0)
              END,
              unknown_cost_count=(logical_usage_hourly.unknown_cost_count::numeric+EXCLUDED.unknown_cost_count)::bigint,
-             duration_millis=logical_usage_hourly.duration_millis+EXCLUDED.duration_millis",
-    )
-    .bind(key.bucket_start)
-    .bind(key.organization_id)
-    .bind(key.principal.principal_kind)
-    .bind(key.principal.gateway_api_key_id)
-    .bind(key.principal.user_id)
-    .bind(key.principal.membership_id)
-    .bind(key.route_id)
-    .bind(key.route_grant_identity_id)
-    .bind(key.ingress_protocol_family)
-    .bind(key.outcome_class)
-    .bind(i64::try_from(delta.request_count).unwrap_or(i64::MAX))
-    .bind(delta.input_units.to_string())
-    .bind(delta.output_units.to_string())
-    .bind(delta.cached_input_units.to_string())
-    .bind(delta.cost_nanos.map(|value| value.to_string()))
-    .bind(i64::try_from(delta.unknown_cost_count).unwrap_or(i64::MAX))
-    .bind(delta.duration_millis.to_string())
-    .execute(&mut **transaction)
-    .await?;
+             duration_millis=logical_usage_hourly.duration_millis+EXCLUDED.duration_millis";
+    let sql = if daily {
+        sql.replace("logical_usage_hourly", "logical_usage_daily")
+            .replace("bucket_start", "bucket_date")
+    } else {
+        sql.to_owned()
+    };
+    sqlx::query(&sql)
+        .bind(if daily {
+            day_bucket(key.bucket_start)
+        } else {
+            key.bucket_start
+        })
+        .bind(key.organization_id)
+        .bind(key.principal.principal_kind)
+        .bind(key.principal.gateway_api_key_id)
+        .bind(key.principal.user_id)
+        .bind(key.principal.membership_id)
+        .bind(key.route_id)
+        .bind(key.route_grant_identity_id)
+        .bind(key.ingress_protocol_family)
+        .bind(key.outcome_class)
+        .bind(i64::try_from(delta.request_count).unwrap_or(i64::MAX))
+        .bind(delta.input_units.to_string())
+        .bind(delta.output_units.to_string())
+        .bind(delta.cached_input_units.to_string())
+        .bind(delta.cost_nanos.map(|value| value.to_string()))
+        .bind(i64::try_from(delta.unknown_cost_count).unwrap_or(i64::MAX))
+        .bind(delta.duration_millis.to_string())
+        .execute(&mut **transaction)
+        .await?;
     Ok(())
 }
 
@@ -772,8 +1014,9 @@ async fn upsert_attempt(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     key: &AttemptUsageKey,
     delta: &AttemptUsageDelta,
+    daily: bool,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query(
+    let sql =
         "INSERT INTO attempt_usage_hourly(
              bucket_start,organization_id,principal_kind,gateway_api_key_id,user_id,membership_id,
              route_id,route_grant_identity_id,target_id,deployment_id,endpoint_id,
@@ -806,45 +1049,63 @@ async fn upsert_attempt(
                  ELSE COALESCE(attempt_usage_hourly.actual_cost_nanos,0)+COALESCE(EXCLUDED.actual_cost_nanos,0)
              END,
              unknown_cost_count=(attempt_usage_hourly.unknown_cost_count::numeric+EXCLUDED.unknown_cost_count)::bigint,
-             duration_millis=attempt_usage_hourly.duration_millis+EXCLUDED.duration_millis",
-    )
-    .bind(key.bucket_start)
-    .bind(key.organization_id)
-    .bind(key.principal.principal_kind)
-    .bind(key.principal.gateway_api_key_id)
-    .bind(key.principal.user_id)
-    .bind(key.principal.membership_id)
-    .bind(key.route_id)
-    .bind(key.route_grant_identity_id)
-    .bind(key.target_id)
-    .bind(key.deployment_id)
-    .bind(key.endpoint_id)
-    .bind(key.endpoint_config_version)
-    .bind(key.credential_id)
-    .bind(key.credential_secret_version)
-    .bind(i64::try_from(key.credential_state_identity_version).unwrap_or(i64::MAX))
-    .bind(key.origin)
-    .bind(key.pricing_policy_version_id)
-    .bind(key.budgets.key_policy_id)
-    .bind(key.budgets.key_version_id)
-    .bind(key.budgets.key_generation.map(|value| i64::try_from(value).unwrap_or(i64::MAX)))
-    .bind(key.budgets.key_epoch.as_deref())
-    .bind(key.budgets.origin_policy_id)
-    .bind(key.budgets.origin_version_id)
-    .bind(key.budgets.origin_generation.map(|value| i64::try_from(value).unwrap_or(i64::MAX)))
-    .bind(key.budgets.origin_epoch.as_deref())
-    .bind(key.terminal_class)
-    .bind(i64::try_from(delta.attempt_count).unwrap_or(i64::MAX))
-    .bind(delta.input_units.to_string())
-    .bind(delta.output_units.to_string())
-    .bind(delta.cached_input_units.to_string())
-    .bind(delta.estimated_cost_nanos.map(|value| value.to_string()))
-    .bind(i64::try_from(delta.unknown_estimate_count).unwrap_or(i64::MAX))
-    .bind(delta.actual_cost_nanos.map(|value| value.to_string()))
-    .bind(i64::try_from(delta.unknown_cost_count).unwrap_or(i64::MAX))
-    .bind(delta.duration_millis.to_string())
-    .execute(&mut **transaction)
-    .await?;
+             duration_millis=attempt_usage_hourly.duration_millis+EXCLUDED.duration_millis";
+    let sql = if daily {
+        sql.replace("attempt_usage_hourly", "attempt_usage_daily")
+            .replace("bucket_start", "bucket_date")
+    } else {
+        sql.to_owned()
+    };
+    sqlx::query(&sql)
+        .bind(if daily {
+            day_bucket(key.bucket_start)
+        } else {
+            key.bucket_start
+        })
+        .bind(key.organization_id)
+        .bind(key.principal.principal_kind)
+        .bind(key.principal.gateway_api_key_id)
+        .bind(key.principal.user_id)
+        .bind(key.principal.membership_id)
+        .bind(key.route_id)
+        .bind(key.route_grant_identity_id)
+        .bind(key.target_id)
+        .bind(key.deployment_id)
+        .bind(key.endpoint_id)
+        .bind(key.endpoint_config_version)
+        .bind(key.credential_id)
+        .bind(key.credential_secret_version)
+        .bind(i64::try_from(key.credential_state_identity_version).unwrap_or(i64::MAX))
+        .bind(key.origin)
+        .bind(key.pricing_policy_version_id)
+        .bind(key.budgets.key_policy_id)
+        .bind(key.budgets.key_version_id)
+        .bind(
+            key.budgets
+                .key_generation
+                .map(|value| i64::try_from(value).unwrap_or(i64::MAX)),
+        )
+        .bind(key.budgets.key_epoch.as_deref())
+        .bind(key.budgets.origin_policy_id)
+        .bind(key.budgets.origin_version_id)
+        .bind(
+            key.budgets
+                .origin_generation
+                .map(|value| i64::try_from(value).unwrap_or(i64::MAX)),
+        )
+        .bind(key.budgets.origin_epoch.as_deref())
+        .bind(key.terminal_class)
+        .bind(i64::try_from(delta.attempt_count).unwrap_or(i64::MAX))
+        .bind(delta.input_units.to_string())
+        .bind(delta.output_units.to_string())
+        .bind(delta.cached_input_units.to_string())
+        .bind(delta.estimated_cost_nanos.map(|value| value.to_string()))
+        .bind(i64::try_from(delta.unknown_estimate_count).unwrap_or(i64::MAX))
+        .bind(delta.actual_cost_nanos.map(|value| value.to_string()))
+        .bind(i64::try_from(delta.unknown_cost_count).unwrap_or(i64::MAX))
+        .bind(delta.duration_millis.to_string())
+        .execute(&mut **transaction)
+        .await?;
     Ok(())
 }
 
@@ -1346,5 +1607,142 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(request_count, 2);
+        let logical_daily: i64 = sqlx::query_scalar("SELECT request_count FROM logical_usage_daily WHERE organization_id=$1 AND bucket_date=$2")
+            .bind(fixture.organization_id).bind(day_bucket(bucket_start)).fetch_one(store.pool()).await.unwrap();
+        let attempt_daily: i64 = sqlx::query_scalar("SELECT attempt_count FROM attempt_usage_daily WHERE organization_id=$1 AND bucket_date=$2")
+            .bind(fixture.organization_id).bind(day_bucket(bucket_start)).fetch_one(store.pool()).await.unwrap();
+        assert_eq!(logical_daily, 2);
+        assert_eq!(attempt_daily, 2);
+
+        // A small application/database clock skew must defer a mixed batch,
+        // not discard its future fact or its already eligible fact.
+        let (present_key, present_delta) = match &logical_batch.facts {
+            UsageFacts::Logical(facts) => facts[0].clone(),
+            UsageFacts::Attempts(_) => unreachable!(),
+        };
+        let mut future_key = present_key.clone();
+        future_key.bucket_start =
+            sqlx::query_scalar::<_, DateTime<Utc>>("SELECT now() + interval '2 seconds'")
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        let catch_up = future_key.bucket_start;
+        let skew_batch = test_batch(
+            91,
+            UsageFacts::Logical(vec![
+                (present_key, present_delta.clone()),
+                (future_key, present_delta),
+            ]),
+        );
+        let skewed = UsageAggregator::new(
+            store.clone(),
+            UsageConfig {
+                flush_interval: Duration::from_secs(5),
+                max_aggregate_keys: 128,
+                max_pending_batches: 2,
+            },
+        );
+        skewed.state.lock().unwrap().pending.push_back(skew_batch);
+        skewed.flush_once().await;
+        assert_eq!(skewed.status().pending_batches, 1);
+        assert_eq!(skewed.status().lost_logical_facts, 0);
+        assert_eq!(
+            skewed.status().last_flush_error.as_deref(),
+            Some("aggregate_bucket_ahead_of_database_clock")
+        );
+        let receipt_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM aggregate_flush_receipts WHERE source_epoch=$1",
+        )
+        .bind(skewed.source_epoch)
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+        assert_eq!(receipt_count, 0);
+        tokio::time::sleep(
+            (catch_up - Utc::now()).to_std().unwrap_or_default() + Duration::from_millis(50),
+        )
+        .await;
+        skewed.flush_once().await;
+        assert_eq!(skewed.status().pending_batches, 0);
+        assert_eq!(skewed.status().lost_logical_facts, 0);
+        assert!(skewed.status().last_flush_error.is_none());
+
+        // Simulate already-persisted history beyond hourly retention. A delayed
+        // retry must not resurrect it after its deduplication receipt is pruned.
+        let mut old_key = match &logical_batch.facts {
+            UsageFacts::Logical(facts) => facts[0].0.clone(),
+            UsageFacts::Attempts(_) => unreachable!(),
+        };
+        old_key.bucket_start -= chrono::Duration::days(31);
+        let delta = LogicalUsageDelta {
+            request_count: 7,
+            ..LogicalUsageDelta::default()
+        };
+        let mut transaction = store.pool().begin().await.unwrap();
+        upsert_logical(&mut transaction, &old_key, &delta, false)
+            .await
+            .unwrap();
+        upsert_logical(&mut transaction, &old_key, &delta, true)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO aggregate_flush_receipts(id,source_epoch,batch_sequence,fact_family,batch_digest,fact_count,flushed_at) VALUES($1,$2,99,'logical_hourly',$3,1,now()-interval '31 days')")
+            .bind(Uuid::now_v7()).bind(source_epoch).bind(vec![0_u8;32]).execute(&mut *transaction).await.unwrap();
+        transaction.commit().await.unwrap();
+        assert!(prune_usage(&store).await.unwrap() >= 2);
+        let old_batch = test_batch(99, UsageFacts::Logical(vec![(old_key.clone(), delta)]));
+        assert_eq!(
+            flush_batch(&store, source_epoch, &old_batch).await.unwrap(),
+            FlushOutcome::Expired
+        );
+        let hourly: i64 = sqlx::query_scalar("SELECT count(*) FROM logical_usage_hourly WHERE organization_id=$1 AND bucket_start=$2")
+            .bind(fixture.organization_id).bind(old_key.bucket_start).fetch_one(store.pool()).await.unwrap();
+        assert_eq!(hourly, 0);
+        let daily: i64 = sqlx::query_scalar("SELECT request_count FROM logical_usage_daily WHERE organization_id=$1 AND bucket_date=$2")
+            .bind(fixture.organization_id).bind(day_bucket(old_key.bucket_start)).fetch_one(store.pool()).await.unwrap();
+        assert_eq!(daily, 7);
+        assert!(
+            sqlx::query("DELETE FROM aggregate_flush_receipts WHERE source_epoch=$1")
+                .bind(source_epoch)
+                .execute(store.pool())
+                .await
+                .is_err()
+        );
+
+        let aggregator = UsageAggregator::new(
+            store.clone(),
+            UsageConfig {
+                flush_interval: Duration::from_secs(5),
+                max_aggregate_keys: 1,
+                max_pending_batches: 1,
+            },
+        );
+        aggregator
+            .state
+            .lock()
+            .unwrap()
+            .pending
+            .push_back(old_batch);
+        aggregator.flush_once().await;
+        assert_eq!(aggregator.status().lost_logical_facts, 7);
+        assert_eq!(aggregator.status().pending_batches, 0);
+        aggregator
+            .state
+            .lock()
+            .unwrap()
+            .pending
+            .push_back(logical_batch);
+        // Exhaust only this test's pool, not the database or another process.
+        let mut connections = Vec::new();
+        for _ in 0..store.pool().options().get_max_connections() {
+            connections.push(store.pool().acquire().await.unwrap());
+        }
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            aggregator.shutdown_bounded(Duration::from_millis(30)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(aggregator.status().unconfirmed_logical_facts, 2);
+        drop(connections);
     }
 }

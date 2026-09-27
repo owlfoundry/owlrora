@@ -966,7 +966,6 @@ impl RouteStatus {
 pub struct ModelRoute {
     pub id: RouteId,
     pub resource_scope: ResourceScope,
-    pub owner_user_id: Option<UserId>,
     pub model_key: String,
     pub ingress_protocol_family: IngressProtocolFamily,
     pub required_base_capabilities: BTreeSet<LlmFeatureCapability>,
@@ -983,7 +982,6 @@ pub struct ModelRoute {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateModelRoute {
-    pub owner_user_id: Option<UserId>,
     pub model_key: String,
     pub ingress_protocol_family: IngressProtocolFamily,
     pub required_base_capabilities: BTreeSet<LlmFeatureCapability>,
@@ -1010,11 +1008,6 @@ pub struct UpdateModelRoute {
     pub status: UpdateField<RouteStatus>,
     #[serde(default, skip_serializing_if = "UpdateField::is_omitted")]
     pub targets: UpdateField<Vec<RouteTargetInput>>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct TransferModelRouteOwnership {
-    pub owner_user_id: UserId,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

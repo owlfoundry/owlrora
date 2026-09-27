@@ -499,12 +499,41 @@ pub enum StreamTerminalOutcome {
     Incomplete,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum StreamCommitment {
+    #[default]
+    Pending,
+    Ready,
+    Rejected,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StreamFailureClass {
+    InvalidRequest,
+    AuthOrConfiguration,
+    RateLimited,
+    Overloaded,
+    ProviderFailure,
+    Unknown,
+}
+
+#[derive(Debug, Default)]
+pub struct InspectedSseBatch {
+    pub bytes: Vec<u8>,
+    pub values: Vec<Value>,
+    pub error: Option<WireError>,
+}
+
 #[derive(Debug, Default)]
 pub struct SseInspector {
     pending: Vec<u8>,
     observed_state_ids: BTreeSet<String>,
     latest_usage: Option<ProviderUsage>,
     terminal: Option<StreamTerminalOutcome>,
+    commitment: StreamCommitment,
+    failure_class: Option<StreamFailureClass>,
+    precommit_bytes: u64,
+    precommit_events: u64,
 }
 
 #[derive(Debug)]
@@ -520,25 +549,59 @@ impl SseInspector {
         transport: TransportKind,
         bytes: &[u8],
     ) -> Result<Vec<Value>, WireError> {
-        if self.pending.len().saturating_add(bytes.len()) > MAX_SSE_EVENT_BYTES {
-            return Err(WireError::Bound);
+        let batch = self.push_frames(transport, bytes);
+        match batch.error {
+            Some(error) => Err(error),
+            None => Ok(batch.values),
         }
-        self.pending.extend_from_slice(bytes);
-        let mut values = Vec::new();
-        loop {
-            let Some(end) = find_event_end(&self.pending) else {
+    }
+
+    // Preserve complete native frames and semantic order independently of socket
+    // chunking. On error the valid prefix remains available to an already-ready
+    // stream; a later malformed frame cannot undo earlier commitment evidence.
+    pub fn push_frames(&mut self, transport: TransportKind, bytes: &[u8]) -> InspectedSseBatch {
+        let mut batch = InspectedSseBatch::default();
+        for byte in bytes {
+            if self.commitment == StreamCommitment::Pending {
+                self.precommit_bytes = self.precommit_bytes.saturating_add(1);
+            }
+            self.pending.push(*byte);
+            if self.pending.len() > MAX_SSE_EVENT_BYTES {
+                batch.error = Some(WireError::Bound);
                 break;
-            };
-            let event = self.pending.drain(..end).collect::<Vec<_>>();
-            let consume = if self.pending.starts_with(b"\r\n\r\n") {
+            }
+            let delimiter = if self.pending.ends_with(b"\r\n\r\n") {
                 4
-            } else {
+            } else if self.pending.ends_with(b"\n\n") {
                 2
+            } else {
+                continue;
             };
-            self.pending.drain(..consume);
-            match parse_sse_data(&event)? {
+            if self.commitment == StreamCommitment::Pending {
+                self.precommit_events = self.precommit_events.saturating_add(1);
+            }
+            let data = match parse_sse_data(&self.pending[..self.pending.len() - delimiter]) {
+                Ok(data) => data,
+                Err(error) => {
+                    batch.error = Some(error);
+                    break;
+                }
+            };
+            if let SseEventData::Json(value) = &data
+                && let Some(id) = response_state_id(transport, value)
+                && !self.observed_state_ids.is_empty()
+                && !self.observed_state_ids.contains(&id)
+            {
+                batch.error = Some(WireError::Framing);
+                break;
+            }
+            batch.bytes.append(&mut self.pending);
+            match data {
                 SseEventData::Empty => {}
                 SseEventData::Done => {
+                    if self.commitment == StreamCommitment::Pending {
+                        self.commitment = StreamCommitment::Rejected;
+                    }
                     if matches!(
                         transport,
                         TransportKind::OpenaiChatCompletions
@@ -551,7 +614,25 @@ impl SseInspector {
                     }
                 }
                 SseEventData::Json(value) => {
-                    if let Some(terminal) = stream_terminal_outcome(transport, &value) {
+                    let terminal = stream_terminal_outcome(transport, &value);
+                    if terminal == Some(StreamTerminalOutcome::ProviderFailure)
+                        && self.failure_class.is_none()
+                    {
+                        self.failure_class = Some(classify_stream_failure(&value));
+                    }
+                    if self.commitment == StreamCommitment::Pending {
+                        self.commitment =
+                            if terminal == Some(StreamTerminalOutcome::ProviderFailure) {
+                                StreamCommitment::Rejected
+                            } else if stream_establishes_response(transport, &value) {
+                                StreamCommitment::Ready
+                            } else if terminal == Some(StreamTerminalOutcome::Complete) {
+                                StreamCommitment::Rejected
+                            } else {
+                                StreamCommitment::Pending
+                            };
+                    }
+                    if let Some(terminal) = terminal {
                         self.observe_terminal(terminal);
                     }
                     if let Some(id) = response_state_id(transport, &value) {
@@ -573,11 +654,26 @@ impl SseInspector {
                             self.latest_usage = Some(usage);
                         }
                     }
-                    values.push(value);
+                    batch.values.push(value);
                 }
             }
         }
-        Ok(values)
+        batch
+    }
+
+    #[must_use]
+    pub const fn commitment(&self) -> StreamCommitment {
+        self.commitment
+    }
+
+    #[must_use]
+    pub const fn failure_class(&self) -> Option<StreamFailureClass> {
+        self.failure_class
+    }
+
+    #[must_use]
+    pub const fn precommit_size(&self) -> (u64, u64) {
+        (self.precommit_bytes, self.precommit_events)
     }
 
     #[must_use]
@@ -612,11 +708,107 @@ impl SseInspector {
     }
 }
 
-fn find_event_end(bytes: &[u8]) -> Option<usize> {
-    bytes
-        .windows(2)
-        .position(|window| window == b"\n\n")
-        .or_else(|| bytes.windows(4).position(|window| window == b"\r\n\r\n"))
+fn classify_stream_failure(value: &Value) -> StreamFailureClass {
+    let error = value.get("error").or_else(|| {
+        value
+            .get("response")
+            .and_then(|response| response.get("error"))
+    });
+    let error = error.unwrap_or(value);
+    // Recognize only explicit native error evidence; unknown failures are not
+    // invented overload signals and never gain same-target retry permission.
+    for field in ["type", "code", "status"] {
+        match error.get(field).and_then(Value::as_str) {
+            Some(
+                "invalid_request_error"
+                | "validation_error"
+                | "invalid_argument"
+                | "INVALID_ARGUMENT"
+                | "content_filter"
+                | "content_policy_violation"
+                | "safety",
+            ) => return StreamFailureClass::InvalidRequest,
+            Some(
+                "authentication_error"
+                | "permission_error"
+                | "invalid_api_key"
+                | "invalid_token"
+                | "UNAUTHENTICATED"
+                | "PERMISSION_DENIED",
+            ) => return StreamFailureClass::AuthOrConfiguration,
+            Some("rate_limit_error" | "rate_limit_exceeded" | "RESOURCE_EXHAUSTED") => {
+                return StreamFailureClass::RateLimited;
+            }
+            Some("overloaded_error" | "server_overloaded" | "UNAVAILABLE") => {
+                return StreamFailureClass::Overloaded;
+            }
+            Some("api_error" | "server_error" | "internal_server_error" | "INTERNAL") => {
+                return StreamFailureClass::ProviderFailure;
+            }
+            _ => {}
+        }
+    }
+    StreamFailureClass::Unknown
+}
+
+fn stream_establishes_response(transport: TransportKind, value: &Value) -> bool {
+    match transport {
+        TransportKind::AnthropicMessagesNative
+        | TransportKind::AnthropicMessagesBedrock
+        | TransportKind::AnthropicMessagesVertex => match value.get("type").and_then(Value::as_str)
+        {
+            Some("message_start") => value.get("message").is_some_and(Value::is_object),
+            Some("content_block_start") => value.get("content_block").is_some_and(Value::is_object),
+            Some("content_block_delta" | "message_delta") => {
+                value.get("delta").is_some_and(Value::is_object)
+            }
+            _ => false,
+        },
+        TransportKind::OpenaiResponsesHttp
+        | TransportKind::OpenaiResponsesWebsocket
+        | TransportKind::OpenaiCodexResponses
+        | TransportKind::AzureOpenaiResponses => match value.get("type").and_then(Value::as_str) {
+            Some(
+                "response.created"
+                | "response.in_progress"
+                | "response.completed"
+                | "response.incomplete",
+            ) => value.get("response").is_some_and(Value::is_object),
+            Some("response.output_item.added" | "response.output_item.done") => {
+                value.get("item").is_some_and(Value::is_object)
+            }
+            Some(kind)
+                if kind.starts_with("response.") && kind.rsplit('.').next() == Some("delta") =>
+            {
+                value.get("delta").is_some_and(|delta| !delta.is_null())
+            }
+            _ => false,
+        },
+        TransportKind::OpenaiChatCompletions | TransportKind::AzureOpenaiChatCompletions => value
+            .get("choices")
+            .and_then(Value::as_array)
+            .is_some_and(|choices| {
+                choices.iter().any(|choice| {
+                    choice.get("delta").is_some_and(Value::is_object)
+                        || choice.get("finish_reason").is_some_and(Value::is_string)
+                })
+            }),
+        TransportKind::GoogleGeminiGenerateContent | TransportKind::GoogleVertexGenerateContent => {
+            value
+                .get("candidates")
+                .and_then(Value::as_array)
+                .is_some_and(|candidates| {
+                    candidates.iter().any(|candidate| {
+                        candidate.get("content").is_some_and(Value::is_object)
+                            || candidate.get("finishReason").is_some_and(Value::is_string)
+                    })
+                })
+                || value
+                    .get("promptFeedback")
+                    .and_then(|feedback| feedback.get("blockReason"))
+                    .is_some_and(Value::is_string)
+        }
+    }
 }
 
 fn parse_sse_data(event: &[u8]) -> Result<SseEventData, WireError> {
@@ -666,7 +858,7 @@ fn stream_terminal_outcome(
             _ => None,
         },
         TransportKind::GoogleGeminiGenerateContent | TransportKind::GoogleVertexGenerateContent => {
-            value
+            (value
                 .get("candidates")
                 .and_then(Value::as_array)
                 .is_some_and(|candidates| {
@@ -677,10 +869,20 @@ fn stream_terminal_outcome(
                             .is_some_and(|reason| !reason.is_empty())
                     })
                 })
-                .then_some(StreamTerminalOutcome::Complete)
+                || value
+                    .pointer("/promptFeedback/blockReason")
+                    .and_then(Value::as_str)
+                    .is_some_and(|reason| !reason.is_empty()))
+            .then_some(StreamTerminalOutcome::Complete)
         }
         TransportKind::OpenaiChatCompletions | TransportKind::AzureOpenaiChatCompletions => None,
     }
+}
+
+#[derive(Debug, Default)]
+pub struct DecodedEventStreamBatch {
+    pub payloads: Vec<Vec<u8>>,
+    pub error: Option<WireError>,
 }
 
 #[derive(Debug, Default)]
@@ -690,14 +892,28 @@ pub struct AwsEventStreamDecoder {
 
 impl AwsEventStreamDecoder {
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Vec<u8>>, WireError> {
-        if self.pending.len().saturating_add(bytes.len()) > MAX_EVENT_STREAM_MESSAGE_BYTES * 2 {
-            return Err(WireError::Bound);
+        let batch = self.push_messages(bytes);
+        match batch.error {
+            Some(error) => Err(error),
+            None => Ok(batch.payloads),
         }
-        self.pending.extend_from_slice(bytes);
-        let mut payloads = Vec::new();
-        loop {
+    }
+
+    pub fn push_messages(&mut self, mut bytes: &[u8]) -> DecodedEventStreamBatch {
+        let mut batch = DecodedEventStreamBatch::default();
+        while !bytes.is_empty() {
+            // Buffer at most one bounded message, even when the caller supplies
+            // many coalesced frames in a single network chunk.
+            let needed = if self.pending.len() < 12 {
+                12
+            } else {
+                u32::from_be_bytes(self.pending[0..4].try_into().expect("four bytes")) as usize
+            };
+            let take = needed.saturating_sub(self.pending.len()).min(bytes.len());
+            self.pending.extend_from_slice(&bytes[..take]);
+            bytes = &bytes[take..];
             if self.pending.len() < 12 {
-                break;
+                continue;
             }
             let total =
                 u32::from_be_bytes(self.pending[0..4].try_into().expect("four bytes")) as usize;
@@ -707,29 +923,40 @@ impl AwsEventStreamDecoder {
                 || headers > MAX_EVENT_STREAM_HEADERS_BYTES
                 || 16_usize.saturating_add(headers) > total
             {
-                return Err(WireError::Bound);
-            }
-            if self.pending.len() < total {
+                batch.error = Some(WireError::Bound);
                 break;
             }
-            let message = self.pending.drain(..total).collect::<Vec<_>>();
-            validate_crc(&message)?;
-            let header_end = 12 + headers;
-            validate_event_headers(&message[12..header_end])?;
-            let payload = &message[header_end..total - 4];
-            let wrapper: Value = serde_json::from_slice(payload).map_err(|_| WireError::Framing)?;
-            let encoded = wrapper
-                .get("bytes")
-                .and_then(Value::as_str)
-                .ok_or(WireError::Framing)?;
-            let decoded = STANDARD.decode(encoded).map_err(|_| WireError::Framing)?;
-            if decoded.len() > MAX_SSE_EVENT_BYTES {
-                return Err(WireError::Bound);
+            if self.pending.len() < total {
+                continue;
             }
-            payloads.push(decoded);
+            match decode_event_payload(&self.pending, headers) {
+                Ok(payload) => batch.payloads.push(payload),
+                Err(error) => {
+                    batch.error = Some(error);
+                    break;
+                }
+            }
+            self.pending.clear();
         }
-        Ok(payloads)
+        batch
     }
+}
+
+fn decode_event_payload(message: &[u8], headers: usize) -> Result<Vec<u8>, WireError> {
+    validate_crc(message)?;
+    let header_end = 12 + headers;
+    validate_event_headers(&message[12..header_end])?;
+    let wrapper: Value = serde_json::from_slice(&message[header_end..message.len() - 4])
+        .map_err(|_| WireError::Framing)?;
+    let encoded = wrapper
+        .get("bytes")
+        .and_then(Value::as_str)
+        .ok_or(WireError::Framing)?;
+    let decoded = STANDARD.decode(encoded).map_err(|_| WireError::Framing)?;
+    if decoded.len() > MAX_SSE_EVENT_BYTES {
+        return Err(WireError::Bound);
+    }
+    Ok(decoded)
 }
 
 fn validate_crc(message: &[u8]) -> Result<(), WireError> {
@@ -799,6 +1026,27 @@ mod tests {
     }
 
     #[test]
+    fn gemini_blocked_prompt_is_a_complete_native_response() {
+        for transport in [
+            TransportKind::GoogleGeminiGenerateContent,
+            TransportKind::GoogleVertexGenerateContent,
+        ] {
+            let mut inspector = SseInspector::default();
+            inspector
+                .push(
+                    transport,
+                    b"data: {\"promptFeedback\":{\"blockReason\":\"SAFETY\"}}\n\n",
+                )
+                .unwrap();
+            assert_eq!(inspector.commitment(), StreamCommitment::Ready);
+            assert_eq!(
+                inspector.terminal_outcome(),
+                StreamTerminalOutcome::Complete
+            );
+        }
+    }
+
+    #[test]
     fn sse_inspector_handles_split_events_and_cumulative_usage() {
         let event = b"event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_fixture\",\"usage\":null}}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fixture\",\"usage\":{\"input_tokens\":2,\"output_tokens\":3}}}\n\n";
         let mut inspector = SseInspector::default();
@@ -813,6 +1061,82 @@ mod tests {
         assert_eq!(
             inspector.terminal_outcome(),
             StreamTerminalOutcome::Complete
+        );
+    }
+
+    #[test]
+    fn sse_commitment_and_prefix_bounds_are_independent_of_chunking() {
+        let prefix = b": keepalive\r\n\r\ndata: {\"type\":\"ping\"}\n\n";
+        let ready = b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_test\"}}\n\n";
+        let tail = b"event: message_stop\r\ndata: {\"type\":\"message_stop\"}\r\n\r\n";
+        let input = [prefix.as_slice(), ready.as_slice(), tail.as_slice()].concat();
+        for chunk_size in 1..=input.len() {
+            let mut inspector = SseInspector::default();
+            let mut forwarded = Vec::new();
+            for chunk in input.chunks(chunk_size) {
+                let batch = inspector.push_frames(TransportKind::AnthropicMessagesNative, chunk);
+                assert!(batch.error.is_none());
+                forwarded.extend(batch.bytes);
+            }
+            assert_eq!(forwarded, input);
+            assert_eq!(inspector.commitment(), StreamCommitment::Ready);
+            assert_eq!(
+                inspector.precommit_size(),
+                ((prefix.len() + ready.len()) as u64, 3)
+            );
+            assert_eq!(
+                inspector.terminal_outcome(),
+                StreamTerminalOutcome::Complete
+            );
+        }
+        let failure = b": keepalive\n\ndata: {\"type\":\"ping\"}\n\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}\n\n";
+        for chunk_size in 1..=failure.len() {
+            let mut inspector = SseInspector::default();
+            for chunk in failure.chunks(chunk_size) {
+                inspector
+                    .push(TransportKind::AnthropicMessagesNative, chunk)
+                    .unwrap();
+                assert_ne!(inspector.commitment(), StreamCommitment::Ready);
+            }
+            assert_eq!(inspector.commitment(), StreamCommitment::Rejected);
+        }
+    }
+
+    #[test]
+    fn sse_holds_partial_frames_and_does_not_retract_valid_prefix_on_error() {
+        let mut inspector = SseInspector::default();
+        let prefix = b"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_test\"}}";
+        assert!(
+            inspector
+                .push_frames(TransportKind::OpenaiResponsesHttp, prefix)
+                .bytes
+                .is_empty()
+        );
+        assert!(inspector.state_ids().is_empty());
+        assert_eq!(inspector.commitment(), StreamCommitment::Pending);
+        let batch =
+            inspector.push_frames(TransportKind::OpenaiResponsesHttp, b"\n\ndata: invalid\n\n");
+        assert!(batch.error.is_some());
+        assert_eq!(batch.bytes, [prefix.as_slice(), b"\n\n"].concat());
+        assert_eq!(inspector.commitment(), StreamCommitment::Ready);
+        assert!(inspector.state_ids().contains("resp_test"));
+    }
+
+    #[test]
+    fn sse_event_bound_does_not_limit_coalesced_network_chunks() {
+        let input = b": pulse\n\n".repeat(MAX_SSE_EVENT_BYTES / 8 + 1);
+        let mut inspector = SseInspector::default();
+        let batch = inspector.push_frames(TransportKind::AnthropicMessagesNative, &input);
+        assert!(batch.error.is_none());
+        assert_eq!(batch.bytes, input);
+        assert_eq!(inspector.commitment(), StreamCommitment::Pending);
+        assert!(
+            inspector
+                .push(
+                    TransportKind::AnthropicMessagesNative,
+                    &vec![b'x'; MAX_SSE_EVENT_BYTES + 1]
+                )
+                .is_err()
         );
     }
 

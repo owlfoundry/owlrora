@@ -20,9 +20,7 @@ use tokio_tungstenite::{
 use uuid::Uuid;
 
 use crate::{
-    adapters::provider::wire::{
-        adapt_provider_body, extract_json_usage, response_state_id, upstream_url,
-    },
+    adapters::provider::wire::{extract_json_usage, response_state_id, upstream_url},
     application::Application,
     domain::{IngressProtocolFamily, RouteId, TransportKind},
     protocols::{
@@ -36,12 +34,12 @@ use super::{
     AdmissionContext, Candidate, GatewayPrincipal, LogicalRequestPermit, TargetAttemptPermit,
     authenticate_and_admit, authenticate_websocket_connection,
     dispatch::{
-        AttemptTelemetry, LogicalTelemetry, UpstreamStatusFailure, candidate_policy_ready,
-        candidates_for_request, classify_pre_header_transport_error, classify_upstream_status,
-        effective_stream_duration_limit, gateway_error, logical_admission_error,
-        maximum_output_units, persist_state_origin, prefixed_header, retry_backoff,
-        settle_from_usage, validate_request_bounds,
+        AttemptTelemetry, LogicalTelemetry, ResponseSettlement, UpstreamStatusFailure,
+        candidate_policy_ready, candidates_for_request, classify_pre_header_transport_error,
+        classify_upstream_status, gateway_error, logical_admission_error, maximum_output_units,
+        persist_state_origin, prefixed_header, retry_backoff, validate_request_bounds,
     },
+    lifetime::{RequestLifetime, before},
     usage::AttemptTerminalClass,
 };
 
@@ -70,13 +68,21 @@ pub async fn upgrade(
                 "Responses WebSocket connection capacity is exhausted",
             )
         })?;
+    let lifecycle = Arc::clone(&application.lifecycle);
+    let grace = application.config.shutdown_stream_timeout;
+    // Register before handing the callback to Axum, including a pending upgrade.
+    let upgrade_token = lifecycle.upgrades.token();
     Ok(websocket
         .max_message_size(MAX_CONNECTION_MESSAGE_BYTES)
         .max_frame_size(MAX_CONNECTION_MESSAGE_BYTES)
         .on_upgrade(move |socket| {
             Box::pin(async move {
+                let _upgrade_token = upgrade_token;
                 let _connection_permit = connection_permit;
-                Box::pin(run_connection(socket, application, headers, request_id)).await;
+                tokio::select! {
+                    () = lifecycle.cancelled_after(grace) => {},
+                    () = Box::pin(run_connection(socket, application, headers, request_id)) => {},
+                }
             })
         }))
 }
@@ -154,6 +160,11 @@ async fn run_connection(
                 return;
             }
         };
+        if !application.lifecycle.accepting() {
+            close_normally(&mut downstream, "server draining").await;
+            close_upstream(&mut pinned).await;
+            return;
+        }
         turn_number = turn_number.saturating_add(1);
         let admission = match authenticate_and_admit(
             &application,
@@ -169,7 +180,18 @@ async fn run_connection(
                 return;
             }
         };
-        let mut logical = LogicalTelemetry::new(&admission, Instant::now());
+        let started = Instant::now();
+        let mut logical = LogicalTelemetry::new(&admission, started);
+        let mut lifetime =
+            match RequestLifetime::new(&admission, native.intent.response_mode, started) {
+                Ok(lifetime) => lifetime,
+                Err(error) => {
+                    close_with_error(&mut downstream, &error).await;
+                    close_upstream(&mut pinned).await;
+                    return;
+                }
+            };
+        lifetime.constrain(Some(connection_deadline));
         let _global_permit = match admission.protection.try_acquire_global() {
             Ok(permit) => permit,
             Err(_) => {
@@ -189,7 +211,14 @@ async fn run_connection(
             close_upstream(&mut pinned).await;
             return;
         }
-        let permit = match admit_turn(&admission, &native).await {
+        let permit = match before(lifetime.precommit, admit_turn(&admission, &native))
+            .await
+            .unwrap_or_else(|()| {
+                Err(gateway_error(
+                    &admission,
+                    ProtocolErrorKind::DeadlineExceeded,
+                ))
+            }) {
             Ok(permit) => permit,
             Err(error) => {
                 logical.finish("admission_denied", None, None);
@@ -198,14 +227,34 @@ async fn run_connection(
                 return;
             }
         };
-        let outcome = Box::pin(dispatch_active_turn(
-            &mut downstream,
-            &mut pinned,
-            &admission,
-            &native,
-            &mut logical,
-        ))
+        lifetime.constrain(permit.deadline());
+        let outcome = before(
+            lifetime.terminal,
+            Box::pin(dispatch_active_turn(
+                &mut downstream,
+                &mut pinned,
+                &admission,
+                &native,
+                &mut logical,
+                lifetime,
+            )),
+        )
         .await;
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(()) => {
+                // Drop the upstream socket immediately, before the lease can be reclaimed.
+                drop(pinned.take());
+                drop(permit);
+                logical.finish("deadline_exceeded", None, None);
+                close_with_error(
+                    &mut downstream,
+                    &gateway_error(&admission, ProtocolErrorKind::DeadlineExceeded),
+                )
+                .await;
+                return;
+            }
+        };
         drop(permit);
         match outcome {
             TurnOutcome::Completed | TurnOutcome::CompletedFailure => {}
@@ -321,6 +370,7 @@ async fn dispatch_active_turn(
     admission: &AdmissionContext,
     native: &NativeRequest,
     logical: &mut LogicalTelemetry,
+    lifetime: RequestLifetime,
 ) -> TurnOutcome {
     let reliability = admission
         .generation
@@ -338,9 +388,7 @@ async fn dispatch_active_turn(
         .await;
         return TurnOutcome::Closed;
     };
-    let deadline = logical.deadline_after(Duration::from_millis(
-        reliability.deadline_policy.overall_timeout_ms,
-    ));
+
     if pinned.is_some() {
         return Box::pin(dispatch_pinned_turn(
             downstream,
@@ -349,7 +397,7 @@ async fn dispatch_active_turn(
             native,
             logical,
             &reliability,
-            deadline,
+            lifetime,
         ))
         .await;
     }
@@ -360,7 +408,7 @@ async fn dispatch_active_turn(
         native,
         logical,
         &reliability,
-        deadline,
+        lifetime,
     ))
     .await
 }
@@ -372,10 +420,21 @@ async fn dispatch_pinned_turn(
     native: &NativeRequest,
     logical: &mut LogicalTelemetry,
     reliability: &ReliabilityPolicySnapshot,
-    deadline: Instant,
+    lifetime: RequestLifetime,
 ) -> TurnOutcome {
+    let deadline = lifetime.precommit;
     let selection = pinned.as_ref().map(PinnedUpstream::selection);
-    let candidate = match select_candidate(admission, native, selection.as_ref()).await {
+    let candidate = match before(
+        deadline,
+        select_candidate(admission, native, selection.as_ref()),
+    )
+    .await
+    .unwrap_or_else(|()| {
+        Err(gateway_error(
+            admission,
+            ProtocolErrorKind::DeadlineExceeded,
+        ))
+    }) {
         Ok(candidate) => candidate,
         Err(error) => {
             close_with_error(downstream, &error).await;
@@ -389,7 +448,17 @@ async fn dispatch_pinned_turn(
             return TurnOutcome::Closed;
         }
     };
-    let mut reservation = match reserve_turn(admission, &candidate, native).await {
+    let mut reservation = match before(
+        deadline,
+        Box::pin(reserve_turn(admission, &candidate, native)),
+    )
+    .await
+    .unwrap_or_else(|()| {
+        Err(gateway_error(
+            admission,
+            ProtocolErrorKind::DeadlineExceeded,
+        ))
+    }) {
         Ok(reservation) => reservation,
         Err(error) => {
             close_with_error(downstream, &error).await;
@@ -411,10 +480,12 @@ async fn dispatch_pinned_turn(
             return TurnOutcome::Closed;
         }
     };
-    let telemetry = AttemptTelemetry::new(admission, &candidate, &reservation);
+    let mut telemetry = AttemptTelemetry::new(admission, &candidate, &reservation);
     let Some(upstream) = pinned.as_mut() else {
         return TurnOutcome::Closed;
     };
+    reservation.mark_dispatched();
+    telemetry.mark_dispatched();
     if !send_upstream_until(
         &mut upstream.socket,
         UpstreamMessage::Text(String::from_utf8_lossy(&body).into_owned().into()),
@@ -439,7 +510,7 @@ async fn dispatch_pinned_turn(
         target_permit,
         telemetry,
         logical,
-        deadline,
+        lifetime,
     )
     .await
     {
@@ -458,14 +529,27 @@ async fn dispatch_initial_turn(
     native: &NativeRequest,
     logical: &mut LogicalTelemetry,
     reliability: &ReliabilityPolicySnapshot,
-    deadline: Instant,
+    lifetime: RequestLifetime,
 ) -> TurnOutcome {
-    let candidates = match candidates_for_request(admission, native).await {
+    let deadline = lifetime.precommit;
+    let candidates = match before(deadline, candidates_for_request(admission, native))
+        .await
+        .unwrap_or_else(|()| {
+            Err(gateway_error(
+                admission,
+                ProtocolErrorKind::DeadlineExceeded,
+            ))
+        }) {
         Ok(candidates) => candidates,
         Err(error) => {
             close_with_error(downstream, &error).await;
             return TurnOutcome::Closed;
         }
+    };
+    let candidates = if super::isolation::has_semantic_reference(native.family, &native.envelope) {
+        candidates.into_iter().take(1).collect::<Vec<_>>()
+    } else {
+        candidates
     };
     let can_fail_over = reliability.failover_policy.enabled
         && native.intent.replay_safe
@@ -499,7 +583,17 @@ async fn dispatch_initial_turn(
             {
                 break;
             }
-            let mut reservation = match reserve_turn(admission, candidate, native).await {
+            let mut reservation = match before(
+                deadline,
+                Box::pin(reserve_turn(admission, candidate, native)),
+            )
+            .await
+            .unwrap_or_else(|()| {
+                Err(gateway_error(
+                    admission,
+                    ProtocolErrorKind::DeadlineExceeded,
+                ))
+            }) {
                 Ok(reservation) => reservation,
                 Err(error) => {
                     last_kind = error.kind;
@@ -519,8 +613,14 @@ async fn dispatch_initial_turn(
             };
             attempts = attempts.saturating_add(1);
             same_target = same_target.saturating_add(1);
-            let telemetry = AttemptTelemetry::new(admission, candidate, &reservation);
-            let socket = match connect_candidate(admission, candidate, deadline).await {
+            let mut telemetry = AttemptTelemetry::new(admission, candidate, &reservation);
+            let socket = match before(deadline, connect_candidate(admission, candidate, deadline))
+                .await
+                .unwrap_or_else(|()| {
+                    Err(CandidateConnectFailure::ambiguous(
+                        RetryCondition::ResponseHeaderTimeout,
+                    ))
+                }) {
                 Ok(socket) => socket,
                 Err(failure) => {
                     if failure.terminal_class == AttemptTerminalClass::DefinitelyNotDispatched {
@@ -555,6 +655,8 @@ async fn dispatch_initial_turn(
                 identity: CandidateIdentity::new(candidate),
                 socket,
             };
+            reservation.mark_dispatched();
+            telemetry.mark_dispatched();
             let outcome = if send_upstream_until(
                 &mut trial.socket,
                 UpstreamMessage::Text(String::from_utf8_lossy(&body).into_owned().into()),
@@ -571,7 +673,7 @@ async fn dispatch_initial_turn(
                     target_permit,
                     telemetry,
                     logical,
-                    deadline,
+                    lifetime,
                 )
                 .await
             } else {
@@ -624,10 +726,10 @@ fn prepare_turn_body(
     candidate: &Candidate,
     native: &NativeRequest,
 ) -> Result<Vec<u8>, ProtocolError> {
-    let body = adapt_provider_body(
+    let body = super::isolation::prepare_body(
+        admission,
+        candidate,
         native,
-        candidate.deployment.transport_kind,
-        &candidate.deployment.upstream_model_id,
         maximum_output_units(admission, candidate),
     )
     .map_err(|_| {
@@ -1064,9 +1166,9 @@ async fn proxy_active_turn(
     target_permit: TargetAttemptPermit,
     telemetry: AttemptTelemetry,
     logical: &mut LogicalTelemetry,
-    turn_deadline: Instant,
+    lifetime: RequestLifetime,
 ) -> TurnOutcome {
-    let outcome = proxy_active_turn_inner(
+    let outcome = Box::pin(proxy_active_turn_inner(
         downstream,
         upstream,
         admission,
@@ -1074,8 +1176,8 @@ async fn proxy_active_turn(
         reservation,
         telemetry,
         logical,
-        turn_deadline,
-    )
+        lifetime,
+    ))
     .await;
     match outcome {
         TurnOutcome::Completed => target_permit.success(),
@@ -1092,11 +1194,12 @@ async fn proxy_active_turn_inner(
     upstream: &mut PinnedUpstream,
     admission: &AdmissionContext,
     candidate: &Candidate,
-    mut reservation: super::AttemptReservation,
+    reservation: super::AttemptReservation,
     telemetry: AttemptTelemetry,
     logical: &mut LogicalTelemetry,
-    turn_deadline: Instant,
+    lifetime: RequestLifetime,
 ) -> TurnOutcome {
+    let mut settlement = ResponseSettlement::new(reservation, telemetry);
     let reliability = match admission
         .generation
         .snapshot
@@ -1126,9 +1229,7 @@ async fn proxy_active_turn_inner(
             .stream_idle_timeout_ms
             .unwrap_or(reliability.deadline_policy.stream_idle_timeout_ms),
     );
-    let stream_deadline =
-        Instant::now() + Duration::from_secs(u64::from(effective_stream_duration_limit(admission)));
-    let turn_deadline = turn_deadline.min(stream_deadline);
+    let mut turn_deadline = lifetime.precommit;
     let classification_deadline = Instant::now()
         + Duration::from_millis(
             reliability
@@ -1164,7 +1265,7 @@ async fn proxy_active_turn_inner(
                 .saturating_duration_since(Instant::now())
                 .min(turn_deadline.saturating_duration_since(Instant::now()))
         };
-        let event = timeout(wait, async {
+        let event = before(turn_deadline.min(Instant::now() + wait), async {
             tokio::select! {
                 message = upstream.socket.next() => TurnEvent::Upstream(message),
                 message = downstream.recv() => TurnEvent::Downstream(message),
@@ -1336,6 +1437,11 @@ async fn proxy_active_turn_inner(
                     .await;
                     return TurnOutcome::ClosedFailure;
                 }
+                settlement.observe(extract_json_usage(
+                    candidate.deployment.transport_kind,
+                    &value,
+                ));
+                logical.observe(settlement.usage(), &candidate.deployment);
                 if event_type == "error"
                     && let Some(condition) = websocket_provider_error_condition(&value)
                     && let Some(outcome) = pre_exposure_failure(
@@ -1361,10 +1467,14 @@ async fn proxy_active_turn_inner(
                         return TurnOutcome::ClosedFailure;
                     }
                     if state_id.is_none() {
-                        if persist_state_origin(admission, candidate, &observed)
-                            .await
-                            .is_err()
-                        {
+                        if !matches!(
+                            before(
+                                turn_deadline,
+                                persist_state_origin(admission, candidate, &observed)
+                            )
+                            .await,
+                            Ok(Ok(()))
+                        ) {
                             close_with_error(
                                 downstream,
                                 &gateway_error(
@@ -1418,19 +1528,14 @@ async fn proxy_active_turn_inner(
                         .await;
                         return TurnOutcome::Closed;
                     }
-                    let usage = (event_type != "error")
-                        .then(|| extract_json_usage(candidate.deployment.transport_kind, &value));
-                    if let Some(usage) = &usage {
-                        settle_from_usage(&mut reservation, &candidate.deployment, usage.clone());
-                    }
-                    telemetry.finish(AttemptTerminalClass::Actual, usage.as_ref());
+                    settlement.finish();
                     logical.finish(
                         if event_type == "response.completed" {
                             "success"
                         } else {
                             "provider_terminal"
                         },
-                        usage.as_ref(),
+                        Some(settlement.usage()),
                         Some(&candidate.deployment),
                     );
                     if committed {
@@ -1477,6 +1582,7 @@ async fn proxy_active_turn_inner(
                         }
                     }
                     committed = true;
+                    turn_deadline = lifetime.terminal;
                 } else if committed
                     && !send_downstream_until(
                         downstream,
@@ -1541,12 +1647,9 @@ async fn send_downstream_until(
     message: DownstreamMessage,
     deadline: Instant,
 ) -> bool {
-    timeout(
-        deadline.saturating_duration_since(Instant::now()),
-        downstream.send(message),
-    )
-    .await
-    .is_ok_and(|result| result.is_ok())
+    before(deadline, downstream.send(message))
+        .await
+        .is_ok_and(|result| result.is_ok())
 }
 
 async fn send_upstream_until(
@@ -1554,12 +1657,9 @@ async fn send_upstream_until(
     message: UpstreamMessage,
     deadline: Instant,
 ) -> bool {
-    timeout(
-        deadline.saturating_duration_since(Instant::now()),
-        upstream.send(message),
-    )
-    .await
-    .is_ok_and(|result| result.is_ok())
+    before(deadline, upstream.send(message))
+        .await
+        .is_ok_and(|result| result.is_ok())
 }
 
 async fn close_with_error(downstream: &mut WebSocket, error: &ProtocolError) {

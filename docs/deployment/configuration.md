@@ -64,6 +64,17 @@ Pool limits multiply by the maximum concurrent process count. Do not size one re
 
 The security snapshot age is an admission fail-closed bound, not a runtime publication poll interval. Increasing it expands the period in which a process may serve a stale authorization snapshot.
 
+## Readiness and shutdown
+
+| Variable | Default | Contract |
+| --- | --- | --- |
+| `OWLRORA_REQUIRED_ROUTE_IDS` | unset | Comma-separated exact route UUIDs. Every named route must be structurally callable with a current client; unknown IDs fail readiness. No live provider call is made. |
+| `OWLRORA_SHUTDOWN_REQUEST_TIMEOUT_SECONDS` | `15` | 1–300 seconds from drain start for ordinary HTTP and pre-header work. |
+| `OWLRORA_SHUTDOWN_STREAM_TIMEOUT_SECONDS` | `30` | 1–3,600 seconds from drain start for committed SSE and upgraded WebSocket work. |
+| `OWLRORA_SHUTDOWN_WORKER_TIMEOUT_SECONDS` | `10` | 1–300 seconds for bounded worker settlement/usage flush. |
+
+All non-health-only profiles expose coarse `/ready`. It becomes unavailable during drain; `/health` remains liveness. See [Production operations](/deployment/operations) for ownership, final telemetry flush, and orchestrator grace.
+
 ## Usage aggregation
 
 | Variable                               | Default | Allowed range | Unit           |
@@ -100,7 +111,32 @@ These process-local protections complement distributed Redis policies. They are 
 RUST_LOG=owlrora_server=info,tower_http=warn
 ```
 
-Logs are structured JSON on standard output. Standard OpenTelemetry export is not configured in the current implementation; see [Implementation status](/reference/implementation-status).
+Logs are structured JSON on standard output. They are separate from OTLP and must not be configured to capture request bodies or secrets.
+
+## OpenTelemetry
+
+| Variable | Default | Contract |
+| --- | --- | --- |
+| `OWLRORA_OTLP_ENDPOINT` | unset (disabled) | Operator-controlled HTTP(S) collector base URL, without URL credentials, query, or fragment. Appends `/v1/traces` and `/v1/metrics`. Ignored by `health-only`. |
+| `OWLRORA_TRACE_SAMPLE_RATIO` | `0.1` | Finite 0–1 root sampling probability; child spans follow their parent. Metrics and compact usage are not sampled. |
+
+The source exports standard OTLP/HTTP protobuf using SDK-owned batch and periodic workers. There is no collector round trip on a request task. Untrusted inbound trace context and baggage are ignored; a gateway logical request starts a new trace and upstream attempt spans share its parent. No trace headers are injected into provider requests. No body, header, query, tenant/key/user ID, model name, or arbitrary URL is exported by this instrumentation.
+
+Exported instruments currently include:
+
+- `owlrora.gateway.facts`, `.duration` (seconds), `.units`, `.cost` (USD nanos), `.unknown_cost`, and `.active`, separated by logical/attempt family, protocol, and bounded outcome;
+- `owlrora.gateway.http_responses`, `.http_response_headers` (seconds until response headers, not total stream duration), and `.http_bytes` (HTTP body bytes polled), including pre-admission HTTP rejections;
+- `owlrora.runtime.revision` and `.confirmation_age` (milliseconds);
+- `owlrora.usage.pending_batches` and `.lost_facts`;
+- `owlrora.telemetry.outstanding_spans`, `.dropped_spans` by queue/export reason, and `.metric_export_failures`.
+
+Do not sum logical and attempt facts or costs together. Attempt cost captures each physical attempt; logical evidence describes the client-visible result. Floating-point metric cost is display evidence, not budget authority. Native WebSocket turns contribute logical/attempt metrics; HTTP byte counters do not measure upgraded frames. Fine-grained connect/first-content/coordination latency, per-circuit transitions, and the remaining target signal inventory are not yet exported.
+
+Traces allow at most 512 queued plus in-flight spans and 128 spans per batch, with a one-second scheduled flush. Overflow drops the newest span. HTTP transport timeout is 500 milliseconds; a failed export can retry once with bounded backoff within a 500-millisecond retry budget (an already-started HTTP attempt can extend that budget by at most one transport timeout). Failed batches are counted and discarded, not persisted. Metrics use bounded SDK cardinality and cumulative aggregation, exporting every ten seconds; a failed export loses that observation but a later cumulative snapshot can recover counter totals. Histograms do not guarantee recovery of every missed observation interval.
+
+Providers shut down after request owners and usage workers, with a five-second wait per signal. Protected `system operations telemetry` exposes queue, dropped/export-failed, completed-export, and shutdown-failure evidence without revealing the collector URL or headers. Collector failure never makes readiness fail.
+
+Use TLS for remote collectors; loopback/plain HTTP is suitable for a local collector sidecar. Redirects and implicit HTTP proxies are disabled. The SDK also accepts its standard `OTEL_EXPORTER_OTLP[_TRACES|_METRICS]_HEADERS` operator environment settings for collector authentication. Keep those secrets outside command lines/logs. Explicit OwlRora endpoint/protocol/timeout settings take precedence over the corresponding SDK defaults; do not assume arbitrary `OTEL_*` variables are OwlRora configuration.
 
 ## Dynamic upstream credential environment
 

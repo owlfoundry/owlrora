@@ -568,22 +568,14 @@ impl Application {
             .await
     }
 
-    pub fn authenticate_external_jwt(
+    pub async fn authenticate_external_jwt(
         &self,
         raw_token: &str,
         request_id: String,
     ) -> Result<RequestIdentity, ApplicationError> {
-        self.verify_external_jwt(raw_token, request_id)
-            .map(|(identity, _claims)| identity)
-    }
-
-    pub(crate) fn verify_external_jwt(
-        &self,
-        raw_token: &str,
-        request_id: String,
-    ) -> Result<(RequestIdentity, Value), ApplicationError> {
-        let generation = self.security_generation()?;
+        let generation = self.security_generation().await?;
         self.verify_external_jwt_in_generation(raw_token, request_id, generation)
+            .map(|(identity, _claims)| identity)
     }
 
     pub(crate) fn verify_external_jwt_in_generation(
@@ -754,7 +746,7 @@ impl Application {
 
     pub fn start_identity_refresh_controller(self: &Arc<Self>) {
         let application = Arc::downgrade(self);
-        tokio::spawn(async move {
+        self.lifecycle.spawn_controller(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut ticks = 0_u32;
@@ -846,7 +838,7 @@ impl Application {
         drop(schedule);
 
         let application = self.clone();
-        tokio::spawn(async move {
+        self.lifecycle.spawn_controller(async move {
             let _permit = permit;
             if let Err(error) = application
                 .refresh_issuer_material(issuer_id, None, reason)

@@ -25,6 +25,7 @@ struct ConsoleOperationContract {
     client_generated_idempotency_key: bool,
     secret_input: Option<OperationSecretInput>,
     one_time_secret_response: bool,
+    one_time_result_field: Option<&'static str>,
     sensitive_result: bool,
     high_impact: bool,
     destructive: bool,
@@ -32,6 +33,24 @@ struct ConsoleOperationContract {
 }
 
 fn main() {
+    if std::env::args().any(|argument| argument == "--catalog") {
+        let tuples = owlrora_server::domain::COMPATIBILITY_REGISTRY_V1
+            .iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "ingress": entry.ingress,
+                    "endpoint": entry.endpoint,
+                    "credential": entry.credential,
+                    "transport": entry.transport,
+                })
+            })
+            .collect::<Vec<_>>();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&tuples).expect("catalog serializes")
+        );
+        return;
+    }
     let operations = operation_catalog()
         .into_iter()
         .filter(|operation| operation.console_capability_key.is_some())
@@ -53,6 +72,7 @@ fn main() {
             client_generated_idempotency_key: operation.client_generated_idempotency_key,
             secret_input: operation.secret_input,
             one_time_secret_response: operation.one_time_secret_response,
+            one_time_result_field: operation.one_time_result_field,
             sensitive_result: operation.sensitive_result,
             high_impact: operation.high_impact,
             destructive: operation.destructive,

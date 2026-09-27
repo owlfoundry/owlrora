@@ -144,6 +144,10 @@ When the collector is unavailable, OwlRora continues serving requests until anot
 
 Metrics aggregation occurs in the SDK/process and exports periodically. There is no per-request collector round trip.
 
+The baseline binary uses OTLP/HTTP protobuf with process-local SDK providers, enabled by `OWLRORA_OTLP_ENDPOINT`; `OWLRORA_TRACE_SAMPLE_RATIO` controls parent-based root probability. It does not install a global collector provider or export arbitrary application log fields. Traces admit at most 512 queued/in-flight spans with 128-span batches and drop-newest overflow accounting. HTTP attempts time out after 500 ms and at most one retry fits within a 500-ms retry-start budget; an already started attempt remains bounded by its transport timeout. SDK metric cardinality is bounded, aggregation is cumulative, and export runs every ten seconds. Queue drops, failed span exports, outstanding spans, metric export failures, and shutdown failures remain protected process evidence. A failed metric snapshot is not a count of lost requests. A later cumulative snapshot can recover counter totals, without promising every intermediate histogram interval.
+
+Inbound trace context and baggage are ignored in the baseline. Logical Gateway spans and child attempt spans are explicitly owned across response-body cancellation. External propagation and restricted tenant attributes require a separate enabled policy; their absence must not be represented as end-to-end distributed propagation.
+
 ## 6. Sampling
 
 - Metrics are aggregated, not sampled as individual request records.
@@ -164,6 +168,8 @@ Built-in views use:
 - immutable administrative audit records.
 
 They do not query an internal raw request table because none exists by default.
+
+Hourly and daily logical/attempt aggregate increments and their batch deduplication receipt MUST commit atomically. A batch older than seven days by aggregate bucket and database clock is ineligible before receipt lookup, including after its receipt is pruned. Retain hourly buckets for 30 days, daily buckets for 366 days, and receipts for at least eight days. Retention is asynchronous and bounded per pass; delayed pruning does not enlarge the replay acceptance window. Migration backfill preserves existing hourly facts in daily totals. Day queries combine daily rows for fully covered UTC days with hourly partial-day edges using disjoint ranges; older partial edges are explicitly incomplete rather than fabricated. Final-flush uncertainty and known lost facts are separate counters.
 
 ### 7.1 System dashboard
 

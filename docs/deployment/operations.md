@@ -16,15 +16,18 @@ Use it for container liveness and restart decisions, not traffic admission.
 
 ### Coarse and detailed readiness
 
-`full` and `management` profiles expose public `GET /ready`. It returns only `{"status":"ready"}` or `{"status":"not_ready"}` and is suitable for a coarse load-balancer decision.
+Every profile except `health-only` exposes public `GET /ready`. It returns only `{"status":"ready"}` or `{"status":"not_ready"}` and is suitable for a coarse load-balancer decision.
 
 The authenticated `system.operations.readiness` Management resource exposes the detailed evidence behind that result:
 
 - current-process applied runtime revision;
 - current durable database revision;
 - age of the process's last successful revision confirmation;
-- the current-process publication error, if any;
-- whether a captured policy-tightening deadline has expired.
+- the current-process publication error, if any.
+
+Readiness reads the coherent published generation and its confirmation evidence without making a database query per probe: the generation must include the highest observed security revision and its database confirmation must remain fresh. Ordinary configuration lag and an overdue tenant policy are diagnostics, not deployment-wide unready conditions. A failed rebuild cannot keep revoked management authority alive merely because revision polling still succeeds. Inspect policy activation deadlines through `system operations activations`; only admission consuming the affected policy is blocked.
+
+The protected `system operations runtime` response also reports a runtime `build_id`. Configuration revision orders durable changes; build identity identifies a particular reconstruction. Unavailable credential clients are retried with bounded backoff, and explicit runtime reconciliation can repair the same configuration revision. Healthy unchanged clients remain shared. This does not automatically rotate an already healthy mounted-file credential: use its managed credential replacement/version workflow.
 
 ```bash
 owlrora --profile production --output json system operations readiness
@@ -32,7 +35,7 @@ owlrora --profile production --output json system operations readiness
 
 It does **not** include Redis, target probe, usage worker, or other worker health. Inspect those separately with `system operations coordination`, `target-health`, and `usage-pipeline`.
 
-Readiness currently has no `OWLRORA_REQUIRED_ROUTE_IDS` configuration, so it cannot assert a deployment-specific mandatory route set. `gateway` and `worker` profiles expose no `/ready` route. A management process cannot report the local runtime or worker state of a separate gateway/worker process; use per-process `/health` only for liveness, deployment-platform rollout state, and external end-to-end probes for split profiles.
+`OWLRORA_REQUIRED_ROUTE_IDS` optionally lists stable route UUIDs. Each must resolve to an enabled, structurally callable route with an eligible current client and valid scope bindings. An unknown ID, stale security evidence, or process drain makes readiness fail. This does not send a provider request or promise that a remote provider is healthy. Do not make every tenant route mandatory: an isolated tenant failure should not evict a whole gateway. Probe each split-profile process directly; a management process cannot report the local runtime of a separate gateway/worker.
 
 ## Startup and migrations
 
@@ -94,7 +97,11 @@ Never create a new `system_installation` row for a restored database. It is immu
 7. Inspect protected runtime, coordination, target-health, usage-pipeline, custody, and telemetry status, respecting the evidence scopes below.
 8. Admit the new processes gradually and retain the pre-upgrade database backup until validation completes.
 
-The project does not infer rolling compatibility merely because replicas are stateless. PostgreSQL migrations and Redis key schemas can establish a version boundary. The process handles termination signals and performs Axum graceful shutdown, but the current implementation does not yet expose the target spec's full unready/drain sequence, separately configurable HTTP/stream deadlines, or explicit final usage-flush deadline. External load-balancer draining is therefore required for controlled upgrades.
+The project does not infer rolling compatibility merely because replicas are stateless. PostgreSQL migrations and Redis key schemas can establish a version boundary.
+
+On SIGTERM/Ctrl+C, the process marks itself unready and stops accepting connections. New business requests and new turns on existing WebSockets are rejected. Ordinary HTTP work, including a blocked downstream body, has the request drain grace (default 15 seconds). Already committed SSE and WebSocket work has the stream grace (default 30 seconds). Pre-header work uses request grace, even when the caller requested streaming. Both deadlines start at drain initiation, not at the next body poll. Remaining connection/request owners are dropped and joined before aggregate flush.
+
+Controllers and probes stop, distributed permit-release/grant return is bounded, and usage flush has a worker deadline (default 10 seconds, with individual database flushes bounded to five seconds). Unconfirmed and lost aggregate counts are reported rather than silently called durable. Standard telemetry drains last, with at most five seconds per signal. Configure the orchestrator termination grace to exceed the stream/request maximum plus worker and telemetry allowances. Remove the replica from external ingress before termination when uninterrupted traffic is required; graceful shutdown is bounded, not lossless.
 
 ## Scaling
 
@@ -108,7 +115,7 @@ Multiply connection pools by maximum replica count. Runtime publication currentl
 
 ### Split profiles
 
-Split `management`, `gateway`, and `worker` only when you need independent exposure or scaling. All profiles still share PostgreSQL, Redis, installation identity, and secret custody configuration. A gateway-only process does not expose Console, Management API, or `/ready`; a worker-only process has no business HTTP surface.
+Split `management`, `gateway`, and `worker` only when you need independent exposure or scaling. All profiles still share PostgreSQL, Redis, installation identity, and secret custody configuration. A gateway-only process does not expose Console or Management API; a worker-only process has no business HTTP surface. Both expose `/health` and coarse `/ready`.
 
 ### No affinity requirement
 
@@ -149,18 +156,23 @@ owlrora --profile production --output json system operations telemetry
 
 Emergency coordination recovery is explicit, bounded, audited, and generation-fenced. Do not bypass it by manually editing Redis keys or PostgreSQL policy rows.
 
+## Compact usage retention and replay
+
+Each flush writes hourly and daily logical/attempt aggregates plus its deduplication receipt in one PostgreSQL transaction. Migration 0014 backfills daily totals from existing hourly facts. Hourly buckets are retained for 30 days, daily buckets for 366 days, and receipts for at least eight days. A maintenance pass runs every 60 seconds, deletes at most 10,000 rows per table, and has a five-second total timeout. Expired rows can therefore remain longer during load or outage.
+
+Batch replay is accepted only within seven days of its aggregate bucket, checked against the database clock before receipt lookup. Old replay cannot resurrect facts after receipt cleanup. Recent receipts cannot be deleted through the retention path. Day queries use daily aggregates for fully covered UTC days and hourly aggregates for partial-day edges, without double counting. Partial-day edges older than hourly retention cannot be reconstructed; the response reports completeness/retention limits.
+
+These aggregates are best-effort operational evidence, not a financial ledger. Collector failure does not change usage persistence; database outage can exhaust bounded aggregate queues. Inspect loss and unconfirmed counts before treating totals as complete.
+
 ## Known operational gaps
 
 The current source does not yet provide:
 
 - native TLS listener configuration;
-- standard OpenTelemetry metrics/traces/OTLP export;
-- deployment-configured required-route readiness;
 - automated PostgreSQL/secret backup or restore tooling;
 - a fully documented and automated Redis-loss recovery command;
-- target daily usage rollups and retention worker;
 - target incremental runtime publication via journal deltas/notifications;
 - benchmark evidence for the target fleet/request-scale objectives;
-- the complete target shutdown/drain/flush deadline model.
+- the entire target telemetry signal inventory (the exported subset is listed under server configuration).
 
 Treat these as deployment design inputs, not hidden assurances. Track them on [Implementation status](/reference/implementation-status).

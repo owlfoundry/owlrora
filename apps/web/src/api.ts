@@ -294,6 +294,7 @@ export interface CommandStatus {
 }
 
 export interface ApiResponse<T> {
+  requestId?: string;
   value: T;
   etag: string | null;
   commandStatus: CommandStatus | null;
@@ -435,6 +436,7 @@ export async function apiRequest<T>(
   }
   if (response.status === 204) {
     return {
+      requestId,
       value: undefined as T,
       etag: response.headers.get("etag"),
       commandStatus,
@@ -450,6 +452,7 @@ export async function apiRequest<T>(
     throw error;
   }
   return {
+    requestId,
     value,
     etag: response.headers.get("etag"),
     commandStatus,

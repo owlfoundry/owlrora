@@ -1,0 +1,110 @@
+[
+  {
+    "credential": "static_api_key",
+    "endpoint": "anthropic_api",
+    "ingress": "anthropic_messages",
+    "transport": "anthropic_messages_native"
+  },
+  {
+    "credential": "aws_default_chain",
+    "endpoint": "aws_bedrock_runtime",
+    "ingress": "anthropic_messages",
+    "transport": "anthropic_messages_bedrock"
+  },
+  {
+    "credential": "aws_assume_role",
+    "endpoint": "aws_bedrock_runtime",
+    "ingress": "anthropic_messages",
+    "transport": "anthropic_messages_bedrock"
+  },
+  {
+    "credential": "google_application_default",
+    "endpoint": "google_vertex",
+    "ingress": "anthropic_messages",
+    "transport": "anthropic_messages_vertex"
+  },
+  {
+    "credential": "google_service_account",
+    "endpoint": "google_vertex",
+    "ingress": "anthropic_messages",
+    "transport": "anthropic_messages_vertex"
+  },
+  {
+    "credential": "static_api_key",
+    "endpoint": "openai_api",
+    "ingress": "openai_chat_completions",
+    "transport": "openai_chat_completions"
+  },
+  {
+    "credential": "azure_api_key",
+    "endpoint": "azure_openai",
+    "ingress": "openai_chat_completions",
+    "transport": "azure_openai_chat_completions"
+  },
+  {
+    "credential": "azure_workload_identity",
+    "endpoint": "azure_openai",
+    "ingress": "openai_chat_completions",
+    "transport": "azure_openai_chat_completions"
+  },
+  {
+    "credential": "static_api_key",
+    "endpoint": "openai_api",
+    "ingress": "openai_responses",
+    "transport": "openai_responses_http"
+  },
+  {
+    "credential": "static_api_key",
+    "endpoint": "openai_api",
+    "ingress": "openai_responses",
+    "transport": "openai_responses_websocket"
+  },
+  {
+    "credential": "oauth_openai_codex",
+    "endpoint": "openai_codex",
+    "ingress": "openai_responses",
+    "transport": "openai_codex_responses"
+  },
+  {
+    "credential": "azure_api_key",
+    "endpoint": "azure_openai",
+    "ingress": "openai_responses",
+    "transport": "azure_openai_responses"
+  },
+  {
+    "credential": "azure_workload_identity",
+    "endpoint": "azure_openai",
+    "ingress": "openai_responses",
+    "transport": "azure_openai_responses"
+  },
+  {
+    "credential": "static_api_key",
+    "endpoint": "google_gemini_api",
+    "ingress": "google_gemini",
+    "transport": "google_gemini_generate_content"
+  },
+  {
+    "credential": "google_application_default",
+    "endpoint": "google_gemini_api",
+    "ingress": "google_gemini",
+    "transport": "google_gemini_generate_content"
+  },
+  {
+    "credential": "google_service_account",
+    "endpoint": "google_gemini_api",
+    "ingress": "google_gemini",
+    "transport": "google_gemini_generate_content"
+  },
+  {
+    "credential": "google_application_default",
+    "endpoint": "google_vertex",
+    "ingress": "google_gemini",
+    "transport": "google_vertex_generate_content"
+  },
+  {
+    "credential": "google_service_account",
+    "endpoint": "google_vertex",
+    "ingress": "google_gemini",
+    "transport": "google_vertex_generate_content"
+  }
+]

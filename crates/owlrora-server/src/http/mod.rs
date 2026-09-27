@@ -41,6 +41,10 @@ pub fn gateway_router(application: Arc<Application>) -> Router {
     let state = HttpState { application };
     compatibility::router(state.clone())
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
+        .layer(axum::middleware::from_fn_with_state(
+            state.application.clone(),
+            crate::telemetry::http_observation,
+        ))
         .layer(SetSensitiveHeadersLayer::new([
             header::AUTHORIZATION,
             HeaderName::from_static("x-api-key"),
@@ -50,6 +54,12 @@ pub fn gateway_router(application: Arc<Application>) -> Router {
             header::X_CONTENT_TYPE_OPTIONS,
             HeaderValue::from_static("nosniff"),
         ))
+}
+
+pub fn operational_router(application: Arc<Application>) -> Router {
+    Router::new()
+        .route("/ready", get(handlers::ready))
+        .with_state(HttpState { application })
 }
 
 pub fn management_router(application: Arc<Application>) -> Router {
@@ -75,7 +85,6 @@ pub fn management_router(application: Arc<Application>) -> Router {
     }
     let state = HttpState { application };
     Router::new()
-        .route("/ready", get(handlers::ready))
         .route("/auth/v1/issuers", get(handlers::browser_login_issuers))
         .route(
             "/auth/v1/issuers/{issuer_name}/login",
@@ -551,10 +560,6 @@ pub fn management_router(application: Arc<Application>) -> Router {
         .route(
             "/api/v1/organizations/{organization_id}/model-routes/{id}/actions/update",
             post(handlers::update_organization_model_route),
-        )
-        .route(
-            "/api/v1/organizations/{organization_id}/model-routes/{id}/actions/transfer-ownership",
-            post(handlers::transfer_organization_model_route_ownership),
         )
         .route(
             "/api/v1/organizations/{organization_id}/available-routes",

@@ -4,14 +4,20 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 cli_target="crates/owlrora-cli/src/management_operations.json"
 console_target="apps/web/src/operation_authority.json"
+catalog_target="apps/web/src/catalog_compatibility.json"
+catalog_raw="$(mktemp)"
+catalog_temporary="$(mktemp)"
 cli_temporary="$(mktemp)"
 console_raw="$(mktemp)"
 console_temporary="$(mktemp)"
-trap 'rm -f "$cli_temporary" "$console_raw" "$console_temporary"' EXIT
+trap 'rm -f "$cli_temporary" "$console_raw" "$console_temporary" "$catalog_raw" "$catalog_temporary"' EXIT
 
 cargo run --quiet --locked --package owlrora-server --example export_management_contract > "$cli_temporary"
 cargo run --quiet --locked --package owlrora-server --example export_console_authority > "$console_raw"
 pnpm --filter @owlrora/web exec prettier --stdin-filepath src/operation_authority.json < "$console_raw" > "$console_temporary"
+
+cargo run --quiet --locked --package owlrora-server --example export_console_authority -- --catalog > "$catalog_raw"
+pnpm --filter @owlrora/web exec prettier --stdin-filepath src/catalog_compatibility.json < "$catalog_raw" > "$catalog_temporary"
 
 if [[ "${1:-}" == "--check" ]]; then
   stale=false
@@ -23,11 +29,15 @@ if [[ "${1:-}" == "--check" ]]; then
     echo "console authority projection is stale; run scripts/generate-management-client-contract.sh" >&2
     stale=true
   fi
+  if ! cmp --silent "$catalog_temporary" "$catalog_target"; then
+    echo "catalog compatibility projection is stale; run scripts/generate-management-client-contract.sh" >&2
+    stale=true
+  fi
   if [[ "$stale" == true ]]; then
     exit 1
   fi
 else
   mv "$cli_temporary" "$cli_target"
   mv "$console_temporary" "$console_target"
-  trap - EXIT
+  mv "$catalog_temporary" "$catalog_target"
 fi

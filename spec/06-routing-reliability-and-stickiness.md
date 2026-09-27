@@ -282,7 +282,9 @@ The adapter may buffer a bounded prefix before downstream commitment to distingu
 - malformed framing;
 - immediate clean termination without valid response content.
 
-The buffer is limited by bytes, events, and time. Once a valid content event requires delivery or the bound is reached, OwlRora commits and streams immediately.
+Commitment requires a complete native event establishing a valid response, delivering content/tool output, or completing a valid zero-output response. Socket chunks, partial frames, comments, keep-alives, and unrelated metadata do not establish a response. An explicit provider failure or termination without a valid response before commitment remains eligible only for the configured bounded retry/failover policy. The classification result and complete-event count MUST NOT depend on network chunk boundaries.
+
+The pre-commit prefix is limited by bytes, complete events, and time. Reaching a bound without a valid response fails the attempt rather than converting arbitrary bytes into success. After a qualifying event, OwlRora commits and streams without waiting for the remainder of the response. Only fully inspected frames are forwarded; a partial frame containing a provider-state identifier MUST NOT escape before its binding is checked. Events after commitment, including errors in the same network chunk, cannot retroactively enable failover.
 
 ### 10.2 State machine
 
@@ -355,7 +357,9 @@ Target choice uses static priority/weight plus health protection. It does not co
 
 - Attempt numbers are monotonically increasing within one logical request.
 - One overall deadline starts after basic request parsing and includes admission, target selection, backoff, all attempts, and non-streaming response handling.
-- Streaming uses phase deadlines and a maximum duration rather than forcing all content under a short non-streaming total.
+- Streaming uses the overall deadline through pre-commit admission/dispatch and a separate maximum duration measured from the same logical-request start, not from response commitment or a retry. After commitment, the short overall deadline no longer applies; the original maximum duration remains in force for SSE and each WebSocket turn.
+- A strict-concurrency lease and, for WebSocket turns, the connection lifetime can only shorten both deadlines. Admission/coordinator waits, origin reads/writes, retry backoff, upstream reads, and downstream writes are bounded by the applicable deadline. Expiry never authorizes another attempt.
+- Stream execution and permit cleanup must remain deadline-driven under downstream backpressure, including a client that stops polling the response body. Expiry cancels local upstream work and releases local ownership; it cannot guarantee a remote provider stops billing work already accepted.
 - For Gateway-key traffic, each attempt consumes its own estimate from the key's overall budget and the actual target's derived system/BYOK origin pool because failed or superseded attempts may still incur cost; logical reconciliation sums all known attempt usage/cost.
 - A failed pre-commit attempt does not release logical-request concurrency as if the request ended; the lease or local slot remains held across failover.
 
