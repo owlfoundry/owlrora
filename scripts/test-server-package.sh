@@ -36,6 +36,7 @@ grep -qx README.md <<< "$key_provider_files"
 grep -qx src/lib.rs <<< "$key_provider_files"
 
 server_files="$(tar -tzf "$server_archive" | sed 's#^[^/]*/##')"
+grep -qx Cargo.lock <<< "$server_files"
 grep -qx LICENSE <<< "$server_files"
 grep -qx README.md <<< "$server_files"
 grep -qx src/main.rs <<< "$server_files"
@@ -57,8 +58,8 @@ EOF
 host_target="$(rustc -vV | sed -n 's/^host: //p')"
 test -n "$host_target"
 cargo fetch --locked --target "$host_target"
-CARGO_NET_OFFLINE=true cargo generate-lockfile \
-  --manifest-path "$work_directory/Cargo.toml"
+# Preserve the packaged dependency graph; only custody is patched to its extracted crate.
+cp "$work_directory/owlrora-server-${server_version}/Cargo.lock" "$work_directory/Cargo.lock"
 CARGO_NET_OFFLINE=true cargo build \
   --manifest-path "$work_directory/Cargo.toml" \
   --package owlrora-server \

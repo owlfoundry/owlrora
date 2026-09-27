@@ -23,6 +23,7 @@ cargo package \
   --locked --allow-dirty --no-verify
 
 cli_files="$(tar -tzf "$cli_archive" | sed 's#^[^/]*/##')"
+grep -qx Cargo.lock <<< "$cli_files"
 grep -qx LICENSE <<< "$cli_files"
 grep -qx README.md <<< "$cli_files"
 grep -qx src/main.rs <<< "$cli_files"
@@ -38,8 +39,8 @@ EOF
 host_target="$(rustc -vV | sed -n 's/^host: //p')"
 test -n "$host_target"
 cargo fetch --locked --target "$host_target"
-CARGO_NET_OFFLINE=true cargo generate-lockfile \
-  --manifest-path "$work_directory/Cargo.toml"
+# Preserve the packaged dependency graph instead of resolving from an offline cache.
+cp "$work_directory/owlrora-cli-${cli_version}/Cargo.lock" "$work_directory/Cargo.lock"
 CARGO_NET_OFFLINE=true cargo build \
   --manifest-path "$work_directory/Cargo.toml" \
   --package owlrora-cli \
