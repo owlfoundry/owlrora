@@ -1133,7 +1133,7 @@ fn validate_upgrade_response(response: &reqwest::Response, request_key: &str) ->
 
 fn header_has_token(headers: &HeaderMap, name: header::HeaderName, expected: &str) -> bool {
     headers.get_all(name).iter().any(|value| {
-        value.to_str().ok().is_some_and(|value| {
+        value.to_str().is_ok_and(|value| {
             value
                 .split(',')
                 .any(|token| token.trim().eq_ignore_ascii_case(expected))

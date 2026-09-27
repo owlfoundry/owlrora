@@ -1125,21 +1125,22 @@ impl Application {
         Ok(())
     }
 
-    // Preserve the public async application API while removing probe-time I/O.
-    #[allow(clippy::unused_async)]
-    pub async fn public_ready(&self) -> bool {
+    // Preserve the awaitable application API without probe-time I/O.
+    pub fn public_ready(&self) -> std::future::Ready<bool> {
         // Schema compatibility was established at composition. A probe never
         // performs dependency I/O; authority expires through the publisher fence.
-        self.lifecycle.accepting()
-            && self
-                .runtime
-                .capture_for_authority(Utc::now(), self.config.max_security_snapshot_age)
-                .is_some_and(|generation| {
-                    self.config
-                        .required_route_ids
-                        .iter()
-                        .all(|id| generation.required_route_ready(*id))
-                })
+        std::future::ready(
+            self.lifecycle.accepting()
+                && self
+                    .runtime
+                    .capture_for_authority(Utc::now(), self.config.max_security_snapshot_age)
+                    .is_some_and(|generation| {
+                        self.config
+                            .required_route_ids
+                            .iter()
+                            .all(|id| generation.required_route_ready(*id))
+                    }),
+        )
     }
 
     pub async fn list_principal_sessions(
